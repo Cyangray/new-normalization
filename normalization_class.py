@@ -36,8 +36,6 @@ couples = [['L1', 'L2'],
 #normalization class
 class normalization:
     def __init__(self, OM_folderpath, A, Sn):
-        #self.a0 = a0
-        #self.a1 = a1
         self.OM_folderpath = OM_folderpath
         self.A = A
         self.Sn = Sn
