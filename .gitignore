@@ -130,4 +130,6 @@ dmypy.json
 
 # project specific folders
 backup_rhosigchi
+
+# debug and instrospection files
 debug1.py

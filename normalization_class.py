@@ -8,40 +8,45 @@ data to the final results, for customized error PDFs. This is a systematized,
 effectivized and expanded version of the algorithm used in https://doi.org/10.1103/PhysRevC.107.034605
 '''
 
-
+import time
 import numpy as np
-from functions import D2rho, drho, chisquared, import_Anorm_alpha, import_Bnorm, calc_errors_chis, clean_valmatrix
+from functions import D2rho, drho, chisquared, import_Anorm_alpha, import_Bnorm, calc_errors_chis, clean_valmatrix, make_TALYS_tab_file, make_E1_M1_files_simple, make_scaled_talys_nld_cnt, readldmodel_path, readstrength_path
+import matplotlib
 import matplotlib.pyplot as plt
 from subprocess import call
 import os
 from scipy.special import erf
-from nld_gsf_classes import import_ocl, nld, gsf
-rng = np.random.default_rng()#seed=1070
-
-#full address of modified counting and normalization codes
-counting_code_path = "/home/francesco/oslo-method-software-auto/prog/counting"
-normalization_code_path = "/home/francesco/oslo-method-software-auto/prog/normalization"
+from nld_gsf_classes import import_ocl, nld, gsf, ncrate, MACS
+rng = np.random.default_rng()
+import shutil
+from utils import Z2Name
+from multiprocess import Pool
+import tqdm
+import copy
 
 #working directory
 root_folder = os.getcwd()
 
 #some useful lists
+supported_TALYS_versions = ['1.96', '2.00']
 NLD_keys = ['D0', 'L1', 'L2', 'H1', 'H2', 'TL1', 'TL2', 'TH1', 'TH2', 'extr_model', 'Ex_low', 's_low', 'sigma', 'FWHM']
 couples = [['L1', 'L2'],
            ['H1', 'H2'],
            ['TL1', 'TL2'],
            ['TH1', 'TH2']]
 
-
 #normalization class
 class normalization:
-    def __init__(self, OM_folderpath, A, Sn):
-        self.OM_folderpath = OM_folderpath
+    def __init__(self, rsc_folderpath, oms_path, A, Z, Sn):
+        self.rsc_folderpath = rsc_folderpath
         self.A = A
+        self.Z = Z
         self.Sn = Sn
+        self.counting_code_path = oms_path + '/prog/counting'
+        self.normalization_code_path = oms_path + 'prog/normalization'
         
         #read some important data from rhosigchi output
-        rhosp = np.genfromtxt(self.OM_folderpath + '/rhosp.rsg', skip_header=6, max_rows = 1, delimiter =',')
+        rhosp = np.genfromtxt(self.rsc_folderpath + '/rhosp.rsg', skip_header=6, max_rows = 1, delimiter =',')
         self.a0 = rhosp[1]/1000
         self.a1 = rhosp[2]/1000
         rhopaw_path = self.OM_folderpath + '/rhopaw.rsg'
@@ -51,6 +56,8 @@ class normalization:
         self.rhopaw_length = len(self.rhopaw[:,0])
         self.sigpaw_length = len(self.sigpaw[:,0])
         self.dim = min(self.rhopaw_length, self.sigpaw_length)
+        self.TALYS_models = False
+        self.TALYS_ver = None
         
     def to_energy(self,index):
         #transforms index to energy
@@ -74,8 +81,8 @@ class normalization:
         Gg: average radiative strength (meV)
         dGg: uncertainty in average radiative strength (meV)
         
-        Ex_low: the energy where the spin_cutoff value for low excitation energy is evaluated (used for the linear fit, ALEX method in counting.c. see https://doi.org/10.1140/epja/i2015-15170-4 (or the application in https://doi.org/10.1103/PhysRevC.107.034605))
-        s_low: the corresponding spin_cutoff parameter at Ex_low
+        Ex_low: the energy where the spin-cutoff value for low excitation energy is evaluated (used for the linear fit, ALEX method in counting.c. see https://doi.org/10.1140/epja/i2015-15170-4 (or the application in https://doi.org/10.1103/PhysRevC.107.034605))
+        s_low: the corresponding spin-cutoff parameter at Ex_low
         
         NLD FITTING REGIONS
          - choose whether to give the lower and upper limit for the lower excitation energy fitting interval in energies (ExL1, ExL2), or bin numbers (L1, L2)
@@ -221,7 +228,11 @@ class normalization:
                 TL2 = self.TH1 - 2
             return [TL1, TL2]
             
-            
+    def set_TALYS_version(self, talys_root_path, TALYS_ver):
+        # TALYS_ver: either '1.96' or '2.00'
+        self.talys_root_path = talys_root_path
+        self.TALYS_ver = TALYS_ver
+    
     def set_variation_intervals(self, std_devs, **kwargs):
         
         '''
@@ -331,7 +342,9 @@ class normalization:
         return chi2_score
     
     def dvar_interp(self, xn, variable):
-        
+        '''
+        Calculate the interpolated variable uncertainty if it falls between two known values
+        '''
         varmin = getattr(self, variable + 'min')
         varmax = getattr(self, variable + 'max')
         dvarmin = getattr(self, 'd' + variable + 'min')
@@ -391,14 +404,11 @@ class normalization:
         all_levels = np.loadtxt(countingdat_path)/1000
         self.nld_lvl = np.zeros((self.dim, 2))
         
-        
         if self.FWHM > 0:
-            
             sigma = self.FWHM/(2*np.sqrt(2*np.log(2)))/1000
             
             for i in range(self.dim):
                 self.nld_lvl[i,0] = self.a0 + self.a1*i
-                #self.nld_lvl[i,1] = 0
             
             for l, el in enumerate(all_levels):
                 for j in range(self.dim):
@@ -448,7 +458,6 @@ class normalization:
         '''
         
         vardict = dict(zip(NLD_keys, inputlist))
-        
         for variable in self.rho_variables:
             vardouble = getattr(self, variable + 'double')
             if vardouble:
@@ -460,35 +469,23 @@ class normalization:
         current_drho = drho(self.target_spin, vardict['sigma'], vardict['dsigma'], vardict['D0'], vardict['dD0'], rho = current_rho)
         self.write_input_cnt(current_rho, current_drho, *inputlist)
         #TODO: the following line runs the modified counting.c script. It takes the newly written input file input.cnt and it writes all the normal output files.
-        call([counting_code_path])
+        call([self.counting_code_path])
         #TODO: ...these files are then read and stored in an instantiation of the nld class. It would be nice in the future if the program was purely python, and "counting" was just a python function. Potentially, something Ompy already has.
         curr_nld = nld('rhopaw.cnt', a0 = self.a0, a1 = self.a1)
         curr_nld.clean_nans()
         curr_nld.add_rhoSn(self.Sn, current_rho, current_drho)
         Anorm, alpha = import_Anorm_alpha('alpha.txt')
-        curr_nld.L1 = vardict['L1'] #L1
-        curr_nld.L2 = vardict['L2']
-        curr_nld.H1 = vardict['H1']
-        curr_nld.H2 = vardict['H2']
-        curr_nld.TL1 = vardict['TL1']
-        curr_nld.TL2 = vardict['TL2']
-        curr_nld.TH1 = vardict['TH1']
-        curr_nld.TH2 = vardict['TH2']
-        curr_nld.extr_model = vardict['extr_model']
-        curr_nld.Ex_low = vardict['Ex_low']
-        curr_nld.s_low = vardict['s_low']
-        curr_nld.FWHM = vardict['FWHM']
+        for key,value in vardict.items():
+            setattr(curr_nld, key, value)
         curr_nld.Anorm = Anorm
         curr_nld.alpha = alpha
         curr_nld.rho = current_rho
         curr_nld.drho = current_drho
-        curr_nld.spin_cutoff = vardict['sigma']
-        curr_nld.D0 = vardict['D0']
         extr_mat = import_ocl('fermigas.cnt', self.a0, self.a1, no_errcol = True)
         curr_nld.extr_mat = extr_mat
         curr_nld.rhoSn_chi2 = self.rho_chi2score([vardict[variable] for variable in self.rho_variables])
         curr_nld.chi2 = self.low_levels_chi2(self.nld_lvl, curr_nld) + curr_nld.rhoSn_chi2
-        #self.rho_chi2score([vardict['sigma'], vardict['D0']])
+        curr_nld.talys_nld_cnt = np.genfromtxt('talys_nld_cnt.txt')
         return curr_nld
 
     def write_input_nrm(self, Gg, curr_nld):
@@ -498,7 +495,7 @@ class normalization:
         lines = []
         lines.append(['0', '{:.6f}'.format(self.Sn), '{:.6f}'.format(self.target_spin)])
         lines.append(['{:.6f}'.format(curr_nld.D0), '{:.6f}'.format(Gg)])
-        lines.append(['105.000000', '{:.6f}'.format(self.FWHM)])
+        lines.append(['105.000000', '{:.6f}'.format(curr_nld.FWHM)])
         
         newinput_nrm = ''
         for line in lines:
@@ -519,32 +516,18 @@ class normalization:
         self.write_input_nrm(current_Gg, curr_nld)
         
         #TODO: the following line runs the modified normalization.c script. It takes the newly written input file input.nrm and it writes all the normal output files.
-        call([normalization_code_path]);
+        call([self.normalization_code_path]);
         #TODO: ...these files are then read and stored in an instantiation of the gsf class. It would be nice in the future if the program was purely python, and "normalization" was just a python function. Potentially, something Ompy already has.
         curr_gsf = gsf('strength.nrm', a0 = self.a0, a1 = self.a1)
         curr_gsf.clean_nans()
         Bnorm = import_Bnorm('input.nrm')
-        curr_gsf.L1 = curr_nld.L1
-        curr_gsf.L2 = curr_nld.L2
-        curr_gsf.H1 = curr_nld.H1
-        curr_gsf.H2 = curr_nld.H2
-        curr_gsf.TL1 = curr_nld.TL1
-        curr_gsf.TL2 = curr_nld.TL2
-        curr_gsf.TH1 = curr_nld.TH1
-        curr_gsf.TH2 = curr_nld.TH2
-        curr_gsf.extr_model = curr_nld.extr_model
-        curr_gsf.Ex_low = curr_nld.Ex_low
-        curr_gsf.s_low = curr_nld.s_low
-        curr_gsf.FWHM = curr_nld.FWHM
-        curr_gsf.Anorm = curr_nld.Anorm
         curr_gsf.Bnorm = Bnorm
-        curr_gsf.alpha = curr_nld.alpha
-        curr_gsf.Gg = current_Gg
-        curr_gsf.rho = curr_nld.rho
-        curr_gsf.drho = curr_nld.drho
-        curr_gsf.chi2 = curr_nld.chi2 + ((self.Gg - curr_gsf.Gg)/self.dGg)**2
-        curr_gsf.spin_cutoff = curr_nld.spin_cutoff
         curr_gsf.D0 = curr_nld.D0
+        curr_gsf.FWHM = curr_nld.FWHM
+        curr_gsf.Gg = current_Gg
+        curr_gsf.nld = curr_nld
+        curr_gsf.chi2 = curr_nld.chi2 + ((self.Gg - curr_gsf.Gg)/self.dGg)**2
+        
         return curr_gsf
     
     def initialize_nld_inputlist(self):
@@ -566,7 +549,7 @@ class normalization:
             self.nlds.append(curr_nld)
             self.gsfs.append(curr_gsf)
     
-    def MC_normalization(self, opt_range = [0.9,1.1], MC_range = 1000, load_lists = False, num = 20):
+    def MC_normalization(self, opt_range = [0.9,1.1], MC_range = 1000, load_lists = False, num = 20, delete_points_nld = None, delete_points_gsf = None):
         
         '''
         Runs the MC simulations, by picking random values for the input variables,
@@ -604,13 +587,7 @@ class normalization:
                     self.grid_searches += 1
             
             #then, pick random nlds and gsfs
-            progress_interval = self.MC_range // 10  # Print progress every 10%
-            for i in range(MC_range):
-                if (i + 1) % progress_interval == 0 or i + 1 == MC_range:
-                    #Calculate progress percentage
-                    progress = (i + 1) / MC_range * 100
-                    #Print progress
-                    print(f"Progress: {progress:.2f}% ({i+1}/{self.MC_range})\n", end="\r")
+            for i in tqdm.tqdm(range(MC_range), desc = 'Normalizing NLDs and GSFs'):
                 
                 #initialize input list for NLD with default values
                 nld_inputlist = self.initialize_nld_inputlist()
@@ -652,18 +629,57 @@ class normalization:
                     self.gsfs.append(curr_gsf)
                 
             os.chdir(root_folder)
+            if isinstance(delete_points_nld, list):
+                for i, el in enumerate(self.nlds):
+                    el.delete_point(delete_points_nld)
+            if isinstance(delete_points_gsf, list):
+                for i, el in enumerate(self.gsfs):
+                    el.delete_point(delete_points_gsf)
             
             np.save('nlds.npy', self.nlds)
             np.save('gsfs.npy', self.gsfs)
     
-    def write_tables(self, graphic_function = 'find_chis', path = ''):
+    def calc_TALYS_models(self, load_lists = False, N_cores = 4, number_of_strength_models = 9):
         '''
-        find the errors from the simulations, and write useful tables
+        calculate the TALYS NLD and GSF models for comparison with the normalized NLD and GSF
+        '''
+        self.TALYS_models = True
+        if self.TALYS_ver:
+            assert self.TALYS_ver in supported_TALYS_versions, f'TALYS {self.TALYS_ver} version not supported'
+        else:
+            raise Exception('remember to define the TALYS version with "set_TALYS_version"')
+        
+        if load_lists:
+            self.nld_models = np.load('nld_models.npy', allow_pickle = True)
+            self.gsf_models = np.load('gsf_models.npy', allow_pickle = True)
+        else:
+            os.makedirs('talys_models', exist_ok = True) 
+            os.chdir('talys_models')
+            
+            talys_sim = make_talys_sim_simple(self.A, self.Z, TALYS_ver = self.TALYS_ver) #make function
+            p = Pool(N_cores)
+            length = 6 + number_of_strength_models - 1
+            result = list(tqdm.tqdm(p.imap(talys_sim, range(length)), total=length, desc = 'Calculating TALYS models'))
+            os.chdir(root_folder)
+            output_list = np.array(result)
+            self.nld_models = [n.nld for n in output_list[:6]]
+            self.gsf_models = [n.gsf for n in output_list[5:]]
+            
+            #save models to file
+            np.save('nld_models.npy', self.nld_models)
+            np.save('gsf_models.npy', self.gsf_models)
+            
+            #delete temp files
+            shutil.rmtree('talys_models')
+    
+    def write_NLD_GSF_tables(self, path = ''):
+        '''
+        find the errors from the simulations, and write human readable tables
         '''
         best_fits = []
         valmatrices = []
         for i, (lst, lab) in enumerate(zip([self.nlds, self.gsfs], ['nld','gsf'])):
-            valmatrix, best_fit = calc_errors_chis(lst, lab = lab, return_best_fit=True, graphic_function = graphic_function)
+            valmatrix, best_fit = calc_errors_chis(lst, lab = lab, return_best_fit=True)
             valmatrix = clean_valmatrix(valmatrix)
             valmatrices.append(valmatrix)
             best_fits.append(best_fit)
@@ -681,10 +697,9 @@ class normalization:
         
     def plot_graphs(self, save = True):
         
-        scaling_factor = 0.9
+        scaling_factor = 1.5#0.9
         fig0, ax0 = plt.subplots(figsize = (5.0*scaling_factor, 3.75*scaling_factor), dpi = 300)
         fig1, ax1 = plt.subplots(figsize = (5.0*scaling_factor, 3.75*scaling_factor), dpi = 300)
-        #ax0.plot(np.zeros(1), np.zeros([1,5]), color='w', alpha=0, label=' ')
         
         Sn_lowerr = self.NLD_table[-1,1] - self.NLD_table[-1,2]
         Sn_higherr = self.NLD_table[-1,3] - self.NLD_table[-1,1]
@@ -697,6 +712,27 @@ class normalization:
         ax0.plot(self.best_fitting_nld.extr_mat[(self.H1-5):,0], self.best_fitting_nld.extr_mat[(self.H1-5):,1], color = 'k', linestyle = '--', alpha = 1, label = 'extrap.')
         
         ax1.fill_between(self.GSF_table[:,0], self.GSF_table[:,3], self.GSF_table[:,-3], color = 'b', alpha = 0.2, label=r'1$\sigma$ conf.')
+        if self.TALYS_models:
+            cmap = matplotlib.cm.get_cmap('YlGnBu')
+            stls = ['-','--','-.',':','-','--','-.',':','-']
+            #plot TALYS gsf
+            for i, TALYS_strength in enumerate(self.gsf_models):
+                if i < 3:
+                    col = 3
+                elif i < 6:
+                    col = 6
+                else:
+                    col = 8
+                ax1.plot(TALYS_strength[:,0],TALYS_strength[:,1] + TALYS_strength[:,2], color = cmap(col/9), linestyle = stls[i], alpha = 0.8, label = 'strength %d'%(i+1))
+            
+            #plot TALYS nld
+            for i, TALYS_ldmodel in enumerate(self.nld_models):
+                if i<3:
+                    col = 3
+                else:
+                    col = 5
+                ax0.plot(TALYS_ldmodel[:,0],TALYS_ldmodel[:,3], color = cmap(col/6), linestyle = stls[i], alpha = 0.8, label = 'ldmodel %d'%(i+1))
+        
         ax1.errorbar(self.GSF_table[:,0], self.GSF_table[:,1],yerr=self.GSF_table[:,-1], fmt = '.', color = 'b', ecolor='b', label='This work')
         
         #Plot experiment data
@@ -707,9 +743,10 @@ class normalization:
         ax1.set_xlabel(r'$E_\gamma$ [MeV]')
         ax0.set_ylabel(r'NLD [MeV$^{-1}$]')
         ax1.set_ylabel(r'GSF [MeV$^{-3}$]')
-        ax0.set_ylim([min(self.NLD_table[:-1,-3])*0.5, self.NLD_table[-1,3]*2])
+        ax0.set_ylim([min(self.NLD_table[:-1,-3])*0.5, max(self.NLD_table[:,3])*2])
         ax0.set_xlim([self.NLD_table[0,0]-0.5, self.NLD_table[-1,0]+0.5])
-        fig0.gca().set_xlim(left=min(self.NLD_table[:-1,0])-0.5)
+        ax1.set_ylim([min(self.GSF_table[:,-3])*0.5, max(self.GSF_table[:,3])*2])
+        ax1.set_xlim([self.GSF_table[0,0]-0.5, self.GSF_table[-1,0]+0.5])
         fig0.tight_layout()
         fig1.tight_layout()
         fig0.show()
@@ -717,21 +754,227 @@ class normalization:
         if save:
             fig0.savefig('nld.pdf', format = 'pdf')
             fig1.savefig('gsf.pdf', format = 'pdf')
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+            
+    def write_ncrate_MACS_tables(self, path = '', load_lists = False, label = ''):
+        '''
+        find the errors from the simulations, and write human readable tables
+        '''
         
+        if label != '':
+            label = '_' + label
+        best_fits = []
+        valmatrices = []
+        if load_lists:
+            self.ncrates = np.load(f'ncrates{label}.npy', allow_pickle = True)
+            self.MACSs = np.load(f'MACSs{label}.npy', allow_pickle = True)
+        
+        for i, (lst, lab) in enumerate(zip([self.ncrates, self.MACSs], ['ncrate','MACS'])):
+            valmatrix, best_fit = calc_errors_chis(lst, lab = lab, return_best_fit=True)
+            valmatrix = np.delete(valmatrix, -1, 1)
+            valmatrices.append(valmatrix)
+            best_fits.append(best_fit)
+            if lab == 'ncrate':
+                valmatrix = np.append(valmatrix, self.ncrate_yerr, 1)
+                header = 'Temperature [GK], n-capture rate [cm3/mol/s], best_fit-sigma, best_fit+sigma, best_fit - low staterr, best_fit + high staterr' 
+            elif lab == 'MACS':
+                valmatrix = np.append(valmatrix, self.MACS_yerr, 1)
+                header = 'T*k_B [keV], MACS [mb], best_fit-sigma, best_fit+sigma, best_fit - low staterr, best_fit + high staterr' 
+            if (path != ''):
+                if path[-1] != '/':
+                    path = path + '/'
+            np.savetxt(path + lab + label + '_whole.txt', valmatrix, header = header)
+        self.best_fitting_ncrate = best_fits[0]
+        self.best_fitting_MACS = best_fits[1]
+        self.ncrate_table = valmatrices[0]
+        self.MACS_table = valmatrices[1]
+
+        np.save(path + 'best_fits_ncrates.npy', best_fits)
+        
+    def run_TALYS_sims_parallel(self, M1, high_energy_interp, N_cores = 4, chi2_window = 1.0, load_lists = False, run_stat = True, jlmomp = False, label = ''):
+        '''
+        Run the TALYS simulations in parallel. This might take some hours, depending on how many simulations and how many cores you are using.
+        Anything between ~3h and ~48h. Play around and see if you want to run it overnight or over a weekend, or on a different computer altogether.
+        Input description, from the example files:
+        "M1": this could be a float between 0 and 1, a list 3 elements long, or a list 6 elements long.
+            if it's a float, the M1 strength will be simply calculated as a fraction of the total strength: i.e. if M1 = 0.1, then for every bin the strength will be divided between 10% M1 and 90% E1
+            if it's a list of 3, these will be the centroid, the Gamma and the sigma of an SLO (e.g. of the spin-flip resonance)
+            if it's a list of 6, these will be the centroid, the Gamma and the sigma of two SLOs (e.g., the spin-flip and the scissors resonances)
+        "high_energy_extrap": a (2,n) array with energies and gsf for higher energies. For example, this could be the experimental GDR data for a nearby nucleus, or an exponential extrapolation
+        "chi2_window" = a bit difficult to explain, but the recommended value is 1.0, or as high as possible, the maximum is 2.0. 
+            The higher it is, the more simulations are run, and the longer time it takes, but the result is more precise. 
+            Run once at e.g. chi2_window = 0.2 to get a rough result if you want something quick (although it could be a bit unstable, in that case, increase the number)
+        '''
+        if self.TALYS_ver:
+            assert self.TALYS_ver in supported_TALYS_versions, 'TALYS version not supported'
+        else:
+            raise Exception('remember to define the TALYS version with "set_TALYS_version"')
+        if label != '':
+            label = '_' + label
+        if load_lists:
+            self.ncrates = np.load(f'ncrates{label}.npy', allow_pickle = True)
+            self.MACSs = np.load(f'MACSs{label}.npy', allow_pickle = True)
+        else:
+            chimin = self.best_fitting_gsf.chi2
+            filtered_gsfs = [el for el in self.gsfs if ((el.chi2 > chimin + 1 - chi2_window/2) and (el.chi2 < chimin + 1 + chi2_window/2))]
+            filtered_gsfs.append(self.best_fitting_gsf)
+            self.ncrates = []
+            self.MACSs = []
+            os.makedirs('talys_tmp', exist_ok = True) 
+            os.chdir('talys_tmp')
+            tab_filename = Z2Name(self.Z) + '.tab'
+            print(f'Number of gsfs: {len(filtered_gsfs)}')
+            params = {'filtered_gsfs': filtered_gsfs, 'tab_filename': tab_filename, 'A': self.A, 'Z': self.Z, 'M1': M1, 'high_energy_interp': high_energy_interp, 'jlmomp': jlmomp}
+            talys_sim = make_talys_sim(params, TALYS_ver = self.TALYS_ver) #make function
+            
+            p = Pool(N_cores)
+            length = len(filtered_gsfs)
+            result = list(tqdm.tqdm(p.imap(talys_sim, range(length)), total=length, desc = 'Calculating systematic errors'))
+            
+            #res_matr = np.array(result.get())
+            res_matr = np.array(result)
+            
+            self.ncrates = res_matr[:,0]
+            self.MACSs = res_matr[:,1]
+            os.chdir(root_folder)
+            np.save(f'ncrates{label}.npy', self.ncrates)
+            np.save(f'MACSs{label}.npy', self.MACSs)
+        
+        #delete temp files
+        shutil.rmtree('talys_tmp')
+        if run_stat:
+            self.run_TALYS_statistical_errors(M1, high_energy_interp, jlmomp, N_cores = N_cores)
+        
+    def run_TALYS_statistical_errors(self, M1, high_energy_interp, jlmomp, label = '', N_cores = 4):
+        '''
+        Propagate the statistical errors from the experiment to the MACS and the ncrate by running four
+        TALYS simulations.
+        '''
+        if self.TALYS_ver:
+            assert self.TALYS_ver in supported_TALYS_versions, 'TALYS version not supported'
+        else:
+            raise Exception('remember to define the TALYS version with "set_TALYS_version"')
+        if label != '':
+            label = '_' + label
+        stat_err_gsf_list = [copy.deepcopy(self.best_fitting_gsf) for i in range(4)]
+        
+        tab_down, tab_up = make_scaled_talys_nld_cnt(self.best_fitting_gsf.nld)
+        for i, el in enumerate(stat_err_gsf_list):
+            if i in [0,1]:
+                el.y = el.y + el.yerr
+            else:
+                el.y = el.y - el.yerr
+            if i in [0,2]:
+                el.nld.y = el.nld.y + el.nld.yerr
+                el.nld.talys_nld_cnt = tab_up
+            else:
+                el.nld.y = el.nld.y - el.nld.yerr
+                el.nld.talys_nld_cnt = tab_down
+        os.makedirs('talys_stat', exist_ok = True) 
+        os.chdir('talys_stat')
+        params = {'filtered_gsfs': stat_err_gsf_list, 'tab_filename': Z2Name(self.Z) + '.tab', 'A': self.A, 'Z': self.Z, 'M1': M1, 'high_energy_interp': high_energy_interp, 'jlmomp': jlmomp}
+        talys_sim = make_talys_sim(params, TALYS_ver = self.TALYS_ver) #make function
+        
+        p = Pool(N_cores)
+        length = len(stat_err_gsf_list)
+        result = list(tqdm.tqdm(p.imap(talys_sim, range(length)), total=length, desc = 'Calculating statistical errors'))
+        
+        res_matr = np.array(result)
+        ncrates_stat = res_matr[:,0]
+        MACSs_stat = res_matr[:,1]
+        os.chdir(root_folder)
+        shutil.rmtree('talys_stat')
+        
+        ncrate_lowerr = np.zeros_like(ncrates_stat[0].y)
+        ncrate_higherr = np.zeros_like(ncrates_stat[0].y)
+        MACS_lowerr = np.zeros_like(MACSs_stat[0].y)
+        MACS_higherr = np.zeros_like(MACSs_stat[0].y)
+        
+        for i in range(len(ncrates_stat[0].y)):
+            ncrate_lowerr[i] = min([el.y[i] for el in ncrates_stat])
+            ncrate_higherr[i] = max([el.y[i] for el in ncrates_stat])
+            MACS_lowerr[i] = min([el.y[i] for el in MACSs_stat])
+            MACS_higherr[i] = max([el.y[i] for el in MACSs_stat])
+        self.ncrate_yerr = np.c_[ncrate_lowerr, ncrate_higherr]
+        self.MACS_yerr = np.c_[MACS_lowerr, MACS_higherr]
+        
+#Useful classes and functions preparing for the parallel calculations
+
+class output_pair:
+    def __init__(self, nld, gsf):
+        self.nld = nld
+        self.gsf = gsf
+
+def make_talys_sim(pars, TALYS_ver):
+    filtered_gsfs = pars['filtered_gsfs']
+    tab_filename = pars['tab_filename']
+    A = pars['A']
+    Z = pars['Z']
+    M1 = pars['M1']
+    high_energy_interp = pars['high_energy_interp']
+    jlmomp = pars['jlmomp']
+
+    def talys_sim(i):
+        #uncomment for debugging
+        #start = time.time()
+        el = filtered_gsfs[i]
+        subdir_path = str(i)
+        os.makedirs(subdir_path, exist_ok = True)
+        os.chdir(subdir_path)
+        shutil.copyfile(talys_root_path + '/structure/density/ground/goriely/' + tab_filename, tab_filename.lower())
+        make_TALYS_tab_file(tab_filename.lower(), el.nld.talys_nld_cnt, A, Z)
+        make_E1_M1_files_simple(el.x, el.y, A, Z, M1 = M1, target_folder = '.', high_energy_interp=high_energy_interp, delete_points = None, units = 'mb')
+        write_TALYS_inputfile(A, Z, TALYS_ver, jlmomp, target_dir = '.')
+        os.system('talys <talys.inp> talys.out')
+        curr_ncrate = ncrate('astrorate.g')
+        curr_MACS = MACS('astrorate.g')
+        curr_ncrate.chi2 = curr_MACS.chi2 = el.chi2
+        os.chdir('..')
+        
+        #finish = time.time()
+        #print(f'simulation {i} finished in {finish - start} seconds')
+        return [curr_ncrate, curr_MACS]
+    return talys_sim
+
+def make_talys_sim_simple(A, Z, TALYS_ver):
+    
+    def talys_sim(i):
+        if i < 6:
+            ldmodel = i + 1
+            strength = 1
+        else:
+            ldmodel = 1
+            strength = i - 4
+        subdir_path = str(i)
+        os.makedirs(subdir_path, exist_ok = True)
+        os.chdir(subdir_path)
+        target_dir = '.'
+        if TALYS_ver in ['1.96', '2.00']:
+            inputfile = f'projectile n\nelement {Z2Name(Z)}\nmass {str(A - 1)}\nenergy n0-20.grid\nldmodel {ldmodel}\nstrength {strength}\nlocalomp y\noutgamma y\noutdensity y'
+        else:
+            print('TALYS version not supported')
+        
+        with open(f'{target_dir}/talys.inp', 'w') as write_obj:
+            write_obj.write(inputfile)
+        
+        os.system('talys <talys.inp> talys.out')
+        output_gsf = readstrength_path('talys.out')
+        output_nld = readldmodel_path('talys.out', A, Z)
+        os.chdir('..')
+        curr_output_pair = output_pair(output_nld, output_gsf)
+        return curr_output_pair
+    return talys_sim
+    
+def write_TALYS_inputfile(A, Z, TALYS_ver, jlmomp, target_dir = '.'):
+    tab_filename = Z2Name(Z) + '.tab'
+    omp_line = 'localomp y'
+    if jlmomp:
+        omp_line = 'jlmomp y'
+    if TALYS_ver == '1.96':
+        inputfile = f'projectile n\nelement {Z2Name(Z)}\nmass {str(A - 1)}\nenergy 1\nstrength 4\nstrengthm1 2\nE1file {Z} {A} {target_dir}/gsfE1.dat\nM1file {Z} {A} {target_dir}/gsfM1.dat\ngnorm 1.\ndensfile {Z} {A} {target_dir}/{tab_filename.lower()}\nptable {Z} {A} 0.0\nctable {Z} {A} 0.0\nNlevels {Z} {A} 30\nwtable {Z} {A} 1.0 E1\n{omp_line}\nupbend n\noutgamma y\nastro y'
+    elif TALYS_ver == '2.00':   
+        inputfile = f'projectile n\nelement {Z2Name(Z)}\nmass {str(A - 1)}\nenergy 1\ngnorm n\nE1file {Z} {A} {target_dir}/gsfE1.dat\nM1file {Z} {A} {target_dir}/gsfM1.dat\ndensfile {Z} {A} {target_dir}/{tab_filename.lower()}\nptable {Z} {A} 0.0\nctable {Z} {A} 0.0\nNlevels {Z} {A} 30\nwtable {Z} {A} 1.0 E1\n{omp_line}\nupbend n\noutgamma y\nastro y'
+    else:
+        print('TALYS version not supported')
+    
+    with open(f'{target_dir}/talys.inp', 'w') as write_obj:
+        write_obj.write(inputfile)

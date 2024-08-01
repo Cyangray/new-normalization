@@ -8,7 +8,7 @@ Created on Mon Jul  8 10:51:12 2024
 
 import numpy as np
 import math
-import matplotlib.pyplot as plt
+from dicts_and_consts import k_B
 
 def import_ocl(path,a0,a1, no_errcol=False):
     '''
@@ -65,10 +65,10 @@ class gsf:
         self.yerr = np.array(clean_yerr)
     
     def delete_point(self, position):
+        self.clean_nans()
         self.y = np.delete(self.y, position)
         self.x = np.delete(self.x, position)
         self.yerr = np.delete(self.yerr, position)
-
 
 class nld(gsf):
     '''
@@ -81,3 +81,21 @@ class nld(gsf):
         self.x = np.append(self.x, Sn)
         self.y = np.append(self.y, rhoSn)
         self.yerr = np.append(self.yerr, drhoSn)
+        
+class ncrate():
+    '''
+    Small class for reading ncrates
+    '''
+    def __init__(self, path):
+        self.rawmat = np.loadtxt(path)
+        self.x = self.rawmat[:,0]
+        self.y = self.rawmat[:,1]
+        
+class MACS():
+    '''
+    Small class for reading MACSs
+    '''
+    def __init__(self, path):
+        self.rawmat = np.loadtxt(path)
+        self.x = self.rawmat[:,0]*k_B
+        self.y = self.rawmat[:,2]

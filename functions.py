@@ -7,6 +7,9 @@ Created on Wed Jul 10 13:27:09 2024
 """
 
 import numpy as np
+from dicts_and_consts import const
+from scipy.interpolate import interp1d
+from utils import Z2Name, search_string_in_file
 
 def D2rho(D0, target_spin, spin_cutoff):
     '''
@@ -80,7 +83,7 @@ def import_Bnorm(path):
     arr = np.loadtxt(path, skiprows = 3)
     return arr.item()
 
-def calc_errors_chis(lst, lab, graphic_function = 'find_chis', return_best_fit = False):
+def calc_errors_chis(lst, lab, return_best_fit = False):
     xx = lst[4].x #all energy or temperature vectors are alike. Pick the 5th, but any would do
     val_matrix = np.zeros((xx.size,5))
     
@@ -88,11 +91,7 @@ def calc_errors_chis(lst, lab, graphic_function = 'find_chis', return_best_fit =
     lstargmin = np.nanargmin([el.chi2 for el in lst])
     lstmin = lst[lstargmin]
     
-    graphic_function_s = graphic_function
-    if graphic_function_s == 'find_chis':
-        graphic_function = find_chis
-    elif graphic_function_s == 'find_chis_interp':
-        graphic_function = find_chis_interp
+    graphic_function = find_chis_interp
     
     for i, x in enumerate(xx):
         chis = []
@@ -112,7 +111,10 @@ def calc_errors_chis(lst, lab, graphic_function = 'find_chis', return_best_fit =
                 counterflag += 1
         if counterflag > 10:
             errmin, errmax = graphic_function(vals,chis)
-            row[:] = [x, lstmin.y[i], errmin, errmax, lstmin.yerr[i]]
+            if hasattr(lst[4], 'yerr'):
+                row[:] = [x, lstmin.y[i], errmin, errmax, lstmin.yerr[i]]
+            else:
+                row[:] = [x, lstmin.y[i], errmin, errmax, np.nan]
         else:
             row[:] = [x, np.nan, np.nan, np.nan, np.nan]
         val_matrix[i,:] = row[:]
@@ -209,32 +211,214 @@ def find_chis_interp(vals, chis, iterations = 2):
     Xmax = (Y-Amax)/Bmax
     return [Xmin,Xmax]
 
-def find_chis(vals,chis):
-    '''
-    function taking as input all chi2-scores associated to the values for a single energy or temperature
-    it finds where the function crosses the chi2+1 line
-    '''
-    whole_mat = np.c_[vals,chis]#np.vstack((vals,chis)).T
-    chimin = np.min(chis)
-    lower_mat = whole_mat[chis<=(chimin+1)]
-    upper_mat = whole_mat[(chis>(chimin+1)) & (chis<(chimin+3))]
-    
-    min1 = upper_mat[upper_mat[:,0]==np.min(upper_mat[:,0])][0]
-    min2 = lower_mat[lower_mat[:,0]==np.min(lower_mat[:,0])][0]
-    max1 = lower_mat[lower_mat[:,0]==np.max(lower_mat[:,0])][0]
-    max2 = upper_mat[upper_mat[:,0]==np.max(upper_mat[:,0])][0]
-    
-    # y(x) = A + Bx
-    Bmin = (min2[1]-min1[1])/(min2[0]-min1[0])
-    Amin = min2[1]-Bmin*min2[0]
-    Bmax = (max2[1]-max1[1])/(max2[0]-max1[0])
-    Amax = max2[1]-Bmax*max2[0]
-    
-    # evaluate at Y = chimin + 1
-    Y = chimin + 1
-    Xmin = (Y-Amin)/Bmin
-    Xmax = (Y-Amax)/Bmax
-    return [Xmin,Xmax]
-
 def clean_valmatrix(val_matrix):
     return val_matrix[~np.isnan(val_matrix).any(axis=1)]
+
+def make_TALYS_tab_file(talys_nld_path, talys_nld_cnt, A, Z):
+    '''
+    Function that incorporates the talys_nld_cnt.txt produced by counting, into
+    the big Zz.tab file from TALYS.
+    '''
+    fmt = "%7.2f %6.3f %9.2E %8.2E %8.2E" + 30*" %8.2E"
+    newfile_content = ''
+    isotope_strip = f'{Z2Name(Z)}{A}'  #f'Z={Z: >3} A={A: >3}'
+    isotopeline = 100000
+    with open(talys_nld_path, 'r') as read_obj:
+        for n, line in enumerate(read_obj):
+            stripped_line = line
+            new_line = stripped_line
+            if isotope_strip in line:
+                isotopeline = n
+            if (n >= isotopeline + 3) and ((n - isotopeline + 3) < len(talys_nld_cnt)):
+                row = talys_nld_cnt[n - isotopeline - 3]
+                new_line_string = fmt % tuple(row) + '\n'
+                new_line = new_line_string
+            newfile_content += new_line
+    
+    with open(talys_nld_path, 'w') as write_obj:
+        write_obj.write(newfile_content)
+        
+def make_scaled_talys_nld_cnt(nld_obj):
+    '''
+    Function that creates two new .tab files by scaling up and down the experimental
+    values of the nld according to the statistical errors.
+    '''
+    
+    #ocl_nld_path = nld_obj.path[:-10] + 'talys_nld_cnt.txt'
+    #talys_nld_cnt = nld_obj.talys_nld_cnt#np.loadtxt(ocl_nld_path)
+    rel_errs = nld_obj.yerr/nld_obj.y
+    max_Ex = nld_obj.x[-1]
+    #Sn_rel_err = nld_obj.drho/nld_obj.rho
+    tab_energies = nld_obj.talys_nld_cnt[:,0]
+    rel_errs_tab = np.zeros_like(tab_energies)
+    talys_nld_cnt_up = nld_obj.talys_nld_cnt.copy()
+    talys_nld_cnt_down = nld_obj.talys_nld_cnt.copy()
+    for i, Ex in enumerate(tab_energies):
+        if Ex <= max_Ex:
+            #for energies less than Ex_max: interpolate, find relative error
+            rel_errs_tab[i] = np.interp(Ex, nld_obj.x, rel_errs)
+        else:
+            #for energies above Sn: as for Sn
+            rel_errs_tab[i] = rel_errs[-1]
+        talys_nld_cnt_up[i, 2:] = nld_obj.talys_nld_cnt[i, 2:]*(1.+rel_errs_tab[i])
+        talys_nld_cnt_down[i, 2:] = nld_obj.talys_nld_cnt[i, 2:]*(1.-rel_errs_tab[i])
+        
+    return [talys_nld_cnt_down, talys_nld_cnt_up]
+        
+def make_E1_M1_files_core(gsf, A, Z, M1, target_folder, high_energy_interp, units):
+    '''
+    Function that takes the energies and the values of gsf and writes two tables 
+    for both E1 and M1 ready to be taken as input by TALYS.
+    '''
+    
+    if high_energy_interp is not None:
+        gsf = np.vstack((gsf,high_energy_interp))
+    
+    gsf_folder_path = ''
+    if target_folder is not None:
+        if target_folder != '':
+            if target_folder[-1] != '/':
+                target_folder = target_folder + '/'
+        gsf_folder_path = target_folder
+    
+    fn_gsf_outE1 = gsf_folder_path + "gsfE1.dat"
+    fn_gsf_outM1 = gsf_folder_path + "gsfM1.dat"
+    
+    # The file is/should be writen in [MeV] [MeV^-3] [MeV^-3]
+    if gsf[0, 0] == 0:
+        gsf = gsf[1:, :]
+    Egsf = gsf[:, 0]
+    
+    if isinstance(M1,float):
+        method = 'frac'
+    elif isinstance(M1, list):
+        if len(M1) == 3:
+            method = 'SLO'
+        elif len(M1) == 6:
+            method = 'SLO2'
+    
+    if method == 'frac':
+        gsfE1 = gsf[:, 1]*(1-M1)
+        gsfM1 = gsf[:, 1]*M1
+    elif method =='SLO':
+        M1_vals = SLO_arglist(gsf[:,0], M1[:3])
+        gsfE1 = gsf[:,1] - M1_vals
+        gsfM1 = M1_vals
+    elif method =='SLO2':
+        M1_vals1 = SLO_arglist(gsf[:,0], M1[:3])
+        M1_vals2 = SLO_arglist(gsf[:,0], M1[3:])
+        M1_vals = M1_vals1 + M1_vals2
+        gsfE1 = gsf[:,1] - M1_vals
+        gsfM1 = M1_vals
+
+    # REMEMBER that the TALYS functions are given in mb/MeV (Goriely's tables)
+    # so we must convert it (simple factor)
+    if units == 'mb':
+        factor_from_mb = 8.6737E-08   # const. factor in mb^(-1) MeV^(-2)
+    else:
+        factor_from_mb = 1.0
+    
+    fE1 = log_interp1d(Egsf, gsfE1, fill_value="extrapolate")
+    fM1 = log_interp1d(Egsf, gsfM1, fill_value="extrapolate")
+    
+    Egsf_out = np.arange(0.1, 30.1, 0.1)
+    
+    headerE1 = f" Z =  {Z} A =  {A}\n" + "  U[MeV]  fE1[mb/MeV]"
+    headerM1 = f" Z =  {Z} A =  {A}\n" + "  U[MeV]  fM1[mb/MeV]"
+    # gsfE1 /= factor_from_mb
+    np.savetxt(fn_gsf_outE1, np.c_[Egsf_out, fE1(Egsf_out)/factor_from_mb],
+               fmt="%9.3f%12.3E", header=headerE1)
+    # gsfM1 /= factor_from_mb
+    np.savetxt(fn_gsf_outM1, np.c_[Egsf_out, fM1(Egsf_out)/factor_from_mb],
+               fmt="%9.3f%12.3E", header=headerM1)
+    return Egsf_out, fE1(Egsf_out)/factor_from_mb, fM1(Egsf_out)/factor_from_mb
+
+def make_E1_M1_files_simple(energies, values, A, Z, M1 = 0.1, target_folder = None, high_energy_interp=None, delete_points = None, units = 'mb'):
+    '''
+    Function that takes the energies and the values of gsf and writes two tables 
+    for both E1 and M1 ready to be taken as input by TALYS.
+    '''
+    gsf = np.c_[energies,values]
+    if delete_points is not None:
+        gsf = np.delete(gsf, delete_points, 0)
+    return make_E1_M1_files_core(gsf, A, Z, M1, target_folder, high_energy_interp, units = units)
+
+def SLO_arglist(E, args):
+    '''
+    Standard Lorentzian, adapted from Kopecky & Uhl (1989) eq. (2.1)
+    '''
+    E0, Gamma0, sigma0 = args
+    funct = const * sigma0 * E * Gamma0**2 / ( (E**2 - E0**2)**2 + E**2 * Gamma0**2 )
+    return funct
+
+def GLO_arglist(E, args):
+    '''
+    General Lorentzian, adapted from Kopecky & Uhl (1989) eq. (2.4)
+    '''
+    T, E0, Gamma0, sigma0 = args
+    Gamma = Gamma0 * (E**2 + 4* np.pi**2 * T**2) / E0**2
+    param1 = (E*Gamma)/( (E**2 - E0**2)**2 + E**2 * Gamma**2 )
+    param2 = 0.7*Gamma0*4*np.pi**2 *T**2 /E0**5
+    funct = const * (param1 + param2)*sigma0*Gamma0
+    return funct
+
+def GLO_hybrid_arglist(E, args):
+    '''
+    Goriely's Hybrid model
+    Coded from the fstrength.f subroutine in TALYS
+    '''
+    T, E0, Gamma0, sigma0 = args
+    ggredep = 0.7 * Gamma0 * ( E/E0 + (2*np.pi*T)**2/(E*E0))
+    enumerator = ggredep*E
+    denominator = (E**2 - E0**2)**2 + E**2 * ggredep * Gamma0
+    factor1 = enumerator/denominator
+    return const*sigma0*Gamma0*factor1
+
+def log_interp1d(xx, yy, **kwargs):
+    """ Interpolate a 1-D function.logarithmically """
+    logy = np.log(yy)
+    lin_interp = interp1d(xx, logy, kind='linear', **kwargs)
+    log_interp = lambda zz: np.exp(lin_interp(zz))
+    return log_interp
+
+def readldmodel_path(path, A, Z):
+    '''
+    reads the nld model from the output file of TALYS, given its path.
+    '''
+    
+    max_rows = 55
+    Zstring = str(Z).rjust(3)
+    Nstring = str(A-Z).rjust(3)
+    start = search_string_in_file(path, f'Level density parameters for Z={Zstring} N={Nstring}')
+
+    Parity = search_string_in_file(path, 'Positive parity', skip_rows = start)
+    if Parity:
+        posneg = True
+        rowsskip = Parity + 2
+        rowsskip2 = search_string_in_file(path, 'Negative parity', skip_rows = start) + 2
+    else:
+        posneg = False
+        rowsskip = search_string_in_file(path, '    Ex     a    sigma', skip_rows = start) + 2
+    
+    if posneg:
+        pos_par = np.loadtxt(path, skiprows = rowsskip, max_rows = max_rows)
+        neg_par = np.loadtxt(path, skiprows = rowsskip2, max_rows = max_rows)
+        out_matrix1 = np.zeros(pos_par.shape)
+        out_matrix1[:,0] = pos_par[:,0]
+        out_matrix1[:,1:] = np.add(pos_par[:,1:], neg_par[:,1:])
+    else:
+        out_matrix1 = np.loadtxt(path, skiprows = rowsskip, max_rows = max_rows)
+    
+    out_matrix2 = out_matrix1.copy()
+    if out_matrix1.shape[1] == 11:
+        out_matrix2 = np.zeros((out_matrix1.shape[0], out_matrix1.shape[1]+2))
+        out_matrix2[:,0] = out_matrix1[:,0]
+        out_matrix2[:,3:] = out_matrix1[:,1:]
+        
+    return out_matrix2
+
+def readstrength_path(path):
+    #read the strength function from the output file
+    #if path to output file is not given, it will be inferred from the simulation parameters
+    rowsskip = search_string_in_file(path, 'f(E1)') + 2
+    return np.loadtxt(path, skiprows = rowsskip, max_rows = 73)
