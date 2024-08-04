@@ -824,7 +824,7 @@ class normalization:
             tab_filename = Z2Name(self.Z) + '.tab'
             print(f'Number of gsfs: {len(filtered_gsfs)}')
             params = {'filtered_gsfs': filtered_gsfs, 'tab_filename': tab_filename, 'A': self.A, 'Z': self.Z, 'M1': M1, 'high_energy_interp': high_energy_interp, 'jlmomp': jlmomp}
-            talys_sim = make_talys_sim(params, TALYS_ver = self.TALYS_ver) #make function
+            talys_sim = make_talys_sim(params, TALYS_path=self.talys_root_path, TALYS_ver = self.TALYS_ver) #make function
             
             p = Pool(N_cores)
             length = len(filtered_gsfs)
@@ -872,7 +872,7 @@ class normalization:
         os.makedirs('talys_stat', exist_ok = True) 
         os.chdir('talys_stat')
         params = {'filtered_gsfs': stat_err_gsf_list, 'tab_filename': Z2Name(self.Z) + '.tab', 'A': self.A, 'Z': self.Z, 'M1': M1, 'high_energy_interp': high_energy_interp, 'jlmomp': jlmomp}
-        talys_sim = make_talys_sim(params, TALYS_ver = self.TALYS_ver) #make function
+        talys_sim = make_talys_sim(params, TALYS_path = self.talys_root_path, TALYS_ver = self.TALYS_ver) #make function
         
         p = Pool(N_cores)
         length = len(stat_err_gsf_list)
@@ -904,7 +904,7 @@ class output_pair:
         self.nld = nld
         self.gsf = gsf
 
-def make_talys_sim(pars, TALYS_ver):
+def make_talys_sim(pars, TALYS_path, TALYS_ver):
     filtered_gsfs = pars['filtered_gsfs']
     tab_filename = pars['tab_filename']
     A = pars['A']
@@ -920,7 +920,7 @@ def make_talys_sim(pars, TALYS_ver):
         subdir_path = str(i)
         os.makedirs(subdir_path, exist_ok = True)
         os.chdir(subdir_path)
-        shutil.copyfile(talys_root_path + '/structure/density/ground/goriely/' + tab_filename, tab_filename.lower())
+        shutil.copyfile(TALYS_path + '/structure/density/ground/goriely/' + tab_filename, tab_filename.lower())
         make_TALYS_tab_file(tab_filename.lower(), el.nld.talys_nld_cnt, A, Z)
         make_E1_M1_files_simple(el.x, el.y, A, Z, M1 = M1, target_folder = '.', high_energy_interp=high_energy_interp, delete_points = None, units = 'mb')
         write_TALYS_inputfile(A, Z, TALYS_ver, jlmomp, target_dir = '.')
