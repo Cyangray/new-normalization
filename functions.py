@@ -184,7 +184,6 @@ def find_chis_interp(vals, chis, iterations = 2):
         
         return np.delete(vertices_input, delete_indexes, 0)
         
-        
     for i in range(iterations):
         vertices_less = delete_points(vertices_less, invert = False)  
         vertices_more = delete_points(vertices_more, invert = True)
@@ -200,6 +199,12 @@ def find_chis_interp(vals, chis, iterations = 2):
             max1 = vertices[i+1,:]
             max2 = vertices[i,:]
             break
+    
+    if min1[0] == min2[0]:
+        min1[0] *= 0.99
+    if max1[0] == max2[0]:
+        max1[0] *= 1.01
+    
     # y(x) = A + Bx
     Bmin = (min2[1]-min1[1])/(min2[0]-min1[0])
     Amin = min2[1]-Bmin*min2[0]
@@ -417,8 +422,16 @@ def readldmodel_path(path, A, Z):
         
     return out_matrix2
 
-def readstrength_path(path):
+def readldmodel(A, Z):
+    name = 'nld' + str(Z).zfill(3) + str(A).zfill(3)
+    density = np.loadtxt(name + '.tab')
+    return density[:,:4]
+
+def readstrength(A, Z):
     #read the strength function from the output file
     #if path to output file is not given, it will be inferred from the simulation parameters
-    rowsskip = search_string_in_file(path, 'f(E1)') + 2
-    return np.loadtxt(path, skiprows = rowsskip, max_rows = 73)
+    name = 'psf' + str(Z).zfill(3) + str(A).zfill(3)
+    E1 = np.loadtxt(name + '.E1')
+    M1 = np.loadtxt(name + '.M1')
+    strength = np.c_[E1, M1[:,1]]
+    return strength

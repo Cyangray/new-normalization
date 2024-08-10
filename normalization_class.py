@@ -10,7 +10,7 @@ effectivized and expanded version of the algorithm used in https://doi.org/10.11
 
 import time
 import numpy as np
-from functions import D2rho, drho, chisquared, import_Anorm_alpha, import_Bnorm, calc_errors_chis, clean_valmatrix, make_TALYS_tab_file, make_E1_M1_files_simple, make_scaled_talys_nld_cnt, readldmodel_path, readstrength_path
+from functions import D2rho, drho, chisquared, import_Anorm_alpha, import_Bnorm, calc_errors_chis, clean_valmatrix, make_TALYS_tab_file, make_E1_M1_files_simple, make_scaled_talys_nld_cnt, readldmodel_path, readstrength
 import matplotlib
 import matplotlib.pyplot as plt
 from subprocess import call
@@ -43,15 +43,15 @@ class normalization:
         self.Z = Z
         self.Sn = Sn
         self.counting_code_path = oms_path + '/prog/counting'
-        self.normalization_code_path = oms_path + 'prog/normalization'
+        self.normalization_code_path = oms_path + '/prog/normalization'
         
         #read some important data from rhosigchi output
         rhosp = np.genfromtxt(self.rsc_folderpath + '/rhosp.rsg', skip_header=6, max_rows = 1, delimiter =',')
         self.a0 = rhosp[1]/1000
         self.a1 = rhosp[2]/1000
-        rhopaw_path = self.OM_folderpath + '/rhopaw.rsg'
+        rhopaw_path = self.rsc_folderpath + '/rhopaw.rsg'
         self.rhopaw = import_ocl(rhopaw_path, self.a0, self.a1)
-        sigpaw_path = self.OM_folderpath + '/sigpaw.rsg'
+        sigpaw_path = self.rsc_folderpath + '/sigpaw.rsg'
         self.sigpaw = import_ocl(sigpaw_path, self.a0, self.a1)
         self.rhopaw_length = len(self.rhopaw[:,0])
         self.sigpaw_length = len(self.sigpaw[:,0])
@@ -228,10 +228,11 @@ class normalization:
                 TL2 = self.TH1 - 2
             return [TL1, TL2]
             
-    def set_TALYS_version(self, talys_root_path, TALYS_ver):
+    def set_TALYS_version(self, talys_root_path, talys_executable_path, TALYS_ver):
         # TALYS_ver: either '1.96' or '2.00'
         self.talys_root_path = talys_root_path
         self.TALYS_ver = TALYS_ver
+        self.talys_executable_path = talys_executable_path
     
     def set_variation_intervals(self, std_devs, **kwargs):
         
@@ -385,7 +386,7 @@ class normalization:
         '''
         
         if countingdat_path == None:
-            countingdat_path = self.OM_folderpath + '/counting.dat'
+            countingdat_path = self.rsc_folderpath + '/counting.dat'
         all_levels = np.loadtxt(countingdat_path)/1000
         self.nld_lvl_raw = np.zeros((self.dim, 2))
         
@@ -399,7 +400,7 @@ class normalization:
         level density from counting.dat
         '''
         if countingdat_path == None:
-            countingdat_path = self.OM_folderpath + '/counting.dat'
+            countingdat_path = self.rsc_folderpath + '/counting.dat'
         
         all_levels = np.loadtxt(countingdat_path)/1000
         self.nld_lvl = np.zeros((self.dim, 2))
@@ -571,7 +572,7 @@ class normalization:
             #initialize lists, start calculating NLDs and GSFs
             self.nlds = []
             self.gsfs = []
-            os.chdir(self.OM_folderpath)
+            os.chdir(self.rsc_folderpath)
             
             #first: a small grid search by varying only one of the rho variables at a time.
             self.grid_searches = 0
@@ -656,21 +657,21 @@ class normalization:
             os.makedirs('talys_models', exist_ok = True) 
             os.chdir('talys_models')
             
-            talys_sim = make_talys_sim_simple(self.A, self.Z, TALYS_ver = self.TALYS_ver) #make function
+            talys_sim = make_talys_sim_simple(self.A, self.Z, talys_executable_path = self.talys_executable_path, TALYS_ver = self.TALYS_ver) #make function
             p = Pool(N_cores)
-            length = 6 + number_of_strength_models - 1
+            length = number_of_strength_models
             result = list(tqdm.tqdm(p.imap(talys_sim, range(length)), total=length, desc = 'Calculating TALYS models'))
             os.chdir(root_folder)
             output_list = np.array(result)
             self.nld_models = [n.nld for n in output_list[:6]]
-            self.gsf_models = [n.gsf for n in output_list[5:]]
+            self.gsf_models = [n.gsf for n in output_list]
             
             #save models to file
             np.save('nld_models.npy', self.nld_models)
             np.save('gsf_models.npy', self.gsf_models)
             
             #delete temp files
-            shutil.rmtree('talys_models')
+            #shutil.rmtree('talys_models')
     
     def write_NLD_GSF_tables(self, path = ''):
         '''
@@ -715,6 +716,7 @@ class normalization:
         if self.TALYS_models:
             cmap = matplotlib.cm.get_cmap('YlGnBu')
             stls = ['-','--','-.',':','-','--','-.',':','-']
+            
             #plot TALYS gsf
             for i, TALYS_strength in enumerate(self.gsf_models):
                 if i < 3:
@@ -754,6 +756,8 @@ class normalization:
         if save:
             fig0.savefig('nld.pdf', format = 'pdf')
             fig1.savefig('gsf.pdf', format = 'pdf')
+            fig0.savefig('nld.png', format = 'png')
+            fig1.savefig('gsf.png', format = 'png')
             
     def write_ncrate_MACS_tables(self, path = '', load_lists = False, label = ''):
         '''
@@ -813,6 +817,8 @@ class normalization:
         if load_lists:
             self.ncrates = np.load(f'ncrates{label}.npy', allow_pickle = True)
             self.MACSs = np.load(f'MACSs{label}.npy', allow_pickle = True)
+            self.ncrate_yerr = np.load(f'ncrate_yerr{label}.npy', allow_pickle = True)
+            self.MACS_yerr = np.load(f'MACS_yerr{label}.npy', allow_pickle = True)
         else:
             chimin = self.best_fitting_gsf.chi2
             filtered_gsfs = [el for el in self.gsfs if ((el.chi2 > chimin + 1 - chi2_window/2) and (el.chi2 < chimin + 1 + chi2_window/2))]
@@ -824,13 +830,11 @@ class normalization:
             tab_filename = Z2Name(self.Z) + '.tab'
             print(f'Number of gsfs: {len(filtered_gsfs)}')
             params = {'filtered_gsfs': filtered_gsfs, 'tab_filename': tab_filename, 'A': self.A, 'Z': self.Z, 'M1': M1, 'high_energy_interp': high_energy_interp, 'jlmomp': jlmomp}
-            talys_sim = make_talys_sim(params, TALYS_path=self.talys_root_path, TALYS_ver = self.TALYS_ver) #make function
+            talys_sim = make_talys_sim(params, talys_root_path=self.talys_root_path, talys_executable_path = self.talys_executable_path, TALYS_ver = self.TALYS_ver) #make function
             
             p = Pool(N_cores)
             length = len(filtered_gsfs)
             result = list(tqdm.tqdm(p.imap(talys_sim, range(length)), total=length, desc = 'Calculating systematic errors'))
-            
-            #res_matr = np.array(result.get())
             res_matr = np.array(result)
             
             self.ncrates = res_matr[:,0]
@@ -839,10 +843,11 @@ class normalization:
             np.save(f'ncrates{label}.npy', self.ncrates)
             np.save(f'MACSs{label}.npy', self.MACSs)
         
-        #delete temp files
-        shutil.rmtree('talys_tmp')
-        if run_stat:
-            self.run_TALYS_statistical_errors(M1, high_energy_interp, jlmomp, N_cores = N_cores)
+            #delete temp files
+            shutil.rmtree('talys_tmp')
+            if run_stat:
+                self.run_TALYS_statistical_errors(M1, high_energy_interp, jlmomp, N_cores = N_cores, label = label)
+                
         
     def run_TALYS_statistical_errors(self, M1, high_energy_interp, jlmomp, label = '', N_cores = 4):
         '''
@@ -872,7 +877,7 @@ class normalization:
         os.makedirs('talys_stat', exist_ok = True) 
         os.chdir('talys_stat')
         params = {'filtered_gsfs': stat_err_gsf_list, 'tab_filename': Z2Name(self.Z) + '.tab', 'A': self.A, 'Z': self.Z, 'M1': M1, 'high_energy_interp': high_energy_interp, 'jlmomp': jlmomp}
-        talys_sim = make_talys_sim(params, TALYS_path = self.talys_root_path, TALYS_ver = self.TALYS_ver) #make function
+        talys_sim = make_talys_sim(params, talys_root_path = self.talys_root_path, talys_executable_path = self.talys_executable_path, TALYS_ver = self.TALYS_ver) #make function
         
         p = Pool(N_cores)
         length = len(stat_err_gsf_list)
@@ -896,6 +901,8 @@ class normalization:
             MACS_higherr[i] = max([el.y[i] for el in MACSs_stat])
         self.ncrate_yerr = np.c_[ncrate_lowerr, ncrate_higherr]
         self.MACS_yerr = np.c_[MACS_lowerr, MACS_higherr]
+        np.save(f'ncrate_yerr{label}.npy', self.ncrate_yerr)
+        np.save(f'MACS_yerr{label}.npy', self.MACS_yerr)
         
 #Useful classes and functions preparing for the parallel calculations
 
@@ -904,7 +911,7 @@ class output_pair:
         self.nld = nld
         self.gsf = gsf
 
-def make_talys_sim(pars, TALYS_path, TALYS_ver):
+def make_talys_sim(pars, talys_root_path, talys_executable_path, TALYS_ver):
     filtered_gsfs = pars['filtered_gsfs']
     tab_filename = pars['tab_filename']
     A = pars['A']
@@ -920,11 +927,13 @@ def make_talys_sim(pars, TALYS_path, TALYS_ver):
         subdir_path = str(i)
         os.makedirs(subdir_path, exist_ok = True)
         os.chdir(subdir_path)
-        shutil.copyfile(TALYS_path + '/structure/density/ground/goriely/' + tab_filename, tab_filename.lower())
+        shutil.copyfile(talys_root_path + '/structure/density/ground/goriely/' + tab_filename, tab_filename.lower())
         make_TALYS_tab_file(tab_filename.lower(), el.nld.talys_nld_cnt, A, Z)
         make_E1_M1_files_simple(el.x, el.y, A, Z, M1 = M1, target_folder = '.', high_energy_interp=high_energy_interp, delete_points = None, units = 'mb')
         write_TALYS_inputfile(A, Z, TALYS_ver, jlmomp, target_dir = '.')
-        os.system('talys <talys.inp> talys.out')
+        shutil.copyfile(talys_executable_path, 'talys')
+        os.system('chmod +x talys')
+        os.system('./talys <talys.inp> talys.out')
         curr_ncrate = ncrate('astrorate.g')
         curr_MACS = MACS('astrorate.g')
         curr_ncrate.chi2 = curr_MACS.chi2 = el.chi2
@@ -935,30 +944,33 @@ def make_talys_sim(pars, TALYS_path, TALYS_ver):
         return [curr_ncrate, curr_MACS]
     return talys_sim
 
-def make_talys_sim_simple(A, Z, TALYS_ver):
+def make_talys_sim_simple(A, Z, talys_executable_path, TALYS_ver):
     
     def talys_sim(i):
-        if i < 6:
-            ldmodel = i + 1
-            strength = 1
-        else:
+        
+        ldmodel = i + 1
+        strength = i + 1
+        if ldmodel > 6:
             ldmodel = 1
-            strength = i - 4
         subdir_path = str(i)
         os.makedirs(subdir_path, exist_ok = True)
         os.chdir(subdir_path)
         target_dir = '.'
+        gnormstring = '1.'
         if TALYS_ver in ['1.96', '2.00']:
-            inputfile = f'projectile n\nelement {Z2Name(Z)}\nmass {str(A - 1)}\nenergy n0-20.grid\nldmodel {ldmodel}\nstrength {strength}\nlocalomp y\noutgamma y\noutdensity y'
+            if TALYS_ver == '2.00':
+                gnormstring = 'n'
+            inputfile = f'projectile n\nelement {Z2Name(Z)}\nmass {str(A - 1)}\nenergy n0-20.grid\nldmodel {ldmodel}\nwtable {Z} {A} 1.0 E1\nstrength {strength}\nlocalomp y\noutgamma y\nfilepsf y\noutdensity y\ngnorm {gnormstring}'
         else:
             print('TALYS version not supported')
         
         with open(f'{target_dir}/talys.inp', 'w') as write_obj:
             write_obj.write(inputfile)
-        
-        os.system('talys <talys.inp> talys.out')
-        output_gsf = readstrength_path('talys.out')
-        output_nld = readldmodel_path('talys.out', A, Z)
+        shutil.copyfile(talys_executable_path, 'talys')
+        os.system('chmod +x talys')
+        os.system('./talys <talys.inp> talys.out')
+        output_gsf = readstrength(A, Z)
+        output_nld = readldmodel_path('talys.out',A, Z)
         os.chdir('..')
         curr_output_pair = output_pair(output_nld, output_gsf)
         return curr_output_pair

@@ -23,7 +23,7 @@ A = 167 #mass number
 Z = 67
 Sn = 7.280 #MeV
 rhosigchi_folder = 'rhosigchi_167Ho'
-oslo_method_software_path = 'home/francesco/oslo-method-software-auto'
+oslo_method_software_path = '/home/francesco/oslo-method-software-auto'
 Ho167norm = normalization(rhosigchi_folder, oslo_method_software_path, A, Z, Sn)
 
 '''
@@ -84,7 +84,7 @@ Ho167norm.import_low_Ex_nld()
 '''
 opt_range = [0.9,1.1] # before running the MC simulation, the algorithm does a quick, mini-gridsearch with the most probable values. opt_range tells how far away from the suggested values one should stride.
 MC_range = 1000       # the number of MC simulations
-Ho167norm.MC_normalization(opt_range = opt_range, MC_range = MC_range, load_lists = True, delete_points_gsf=[-5,-4,-3,-2,-1])
+Ho167norm.MC_normalization(opt_range = opt_range, MC_range = MC_range, load_lists = False, delete_points_gsf=[-5,-4,-3,-2,-1])
 
 '''
 6) translates the results into readable tables.
@@ -96,8 +96,9 @@ Ho167norm.write_NLD_GSF_tables(path = '')
     load_lists = True, if you already have run the program once, and you want to load the data from the saved files instead of calculating it once more
 '''
 talys_root_path = '/home/francesco/talys' #put your own path to the TALYS root folder here
+talys_executable_path = talys_root_path + '/bin/talys'
 talys_version = '2.00' #either '1.96' or '2.00'
-Ho167norm.set_TALYS_version(talys_root_path, talys_version)
+Ho167norm.set_TALYS_version(talys_root_path, talys_executable_path, talys_version)
 Ho167norm.calc_TALYS_models(load_lists = False, N_cores = 8, number_of_strength_models = 9)
 
 '''
@@ -136,10 +137,10 @@ high_energy_extrap = np.c_[Ho165energies, Ho165y]
     load_lists = True, if you already have run the program once, and you want to load the data from the saved files instead of calculating it once more
 '''
 start_whole = time.time()
-Ho167norm.run_TALYS_sims_parallel(M1pars, high_energy_extrap, chi2_window = 1.0, N_cores = 8, load_lists = False, jlmomp = False, label = 'localomp_196')
+Ho167norm.run_TALYS_sims_parallel(M1pars, high_energy_extrap, chi2_window = 1.0, N_cores = 8, load_lists = False, jlmomp = False, label = 'localomp')
 finish_whole = time.time()
 print(f'Whole parallel TALYS simulation ended in {finish_whole - start_whole} seconds')
 '''
 10) write results into human readable tables
 '''
-Ho167norm.write_ncrate_MACS_tables(load_lists = False, label = 'localomp_196')
+Ho167norm.write_ncrate_MACS_tables(load_lists = False, label = 'localomp')

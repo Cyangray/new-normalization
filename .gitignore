@@ -130,6 +130,7 @@ dmypy.json
 
 # project specific folders
 backup_rhosigchi
-
+talys_models_196
+talys_models_200
 # debug and instrospection files
 debug1.py

@@ -8,7 +8,7 @@
    m = (TH1F*)gROOT->FindObject("h");
    if (m) m->Delete();
    TCanvas *c1 = new TCanvas("c1","Spincut parameter",600,600);
-   TH2F *h = new TH2F("h"," ",10,-0.756000,23.052000,50,0.001,    6.6);
+   TH2F *h = new TH2F("h"," ",10,-0.756000,23.052000,50,0.001,    7.9);
    ifstream spincutfile("spincut.cnt");
    float energy[188],spincut[188];
    int i = 0;
