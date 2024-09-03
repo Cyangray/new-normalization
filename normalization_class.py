@@ -29,7 +29,7 @@ root_folder = os.getcwd()
 
 #some useful lists
 supported_TALYS_versions = ['1.96', '2.00']
-NLD_keys = ['D0', 'L1', 'L2', 'H1', 'H2', 'TL1', 'TL2', 'TH1', 'TH2', 'extr_model', 'Ex_low', 's_low', 'sigma', 'FWHM']
+NLD_keys = ['D0', 'L1', 'L2', 'H1', 'H2', 'TL1', 'TL2', 'TH1', 'TH2', 'extr_model', 'Ex_low', 's_low', 'sigma', 'FWHM', 'a', 'E1', 'T', 'E0']
 couples = [['L1', 'L2'],
            ['H1', 'H2'],
            ['TL1', 'TL2'],
@@ -115,7 +115,14 @@ class normalization:
         TH2: upper limit for the high gamma energy interval where the transmission coefficient is fitted (bin, int)
         
         extr_model: NLD model to extrapolate the data to Sn. Either 1 (constant temperature) or 2 (FG)
+        
+        a, E1, T, E0: CT or FG parameters
         '''
+        
+        self.a = 1.0
+        self.T = 1.0
+        self.E0 = 0.0
+        self.E1 = 0.0
         
         for key, value in kwargs.items():
             setattr(self, key, value)
@@ -424,7 +431,7 @@ class normalization:
             self.import_low_Ex_nld_raw(countingdat_path = countingdat_path, binsize = binsize)
             self.nld_lvl = self.nld_lvl_raw
     
-    def write_input_cnt(self, rho, drho, D0, L1, L2, H1, H2, TL1, TL2, TH1, TH2, extr_model, Ex_low, s_low, sigma, FWHM):
+    def write_input_cnt(self, rho, drho, D0, L1, L2, H1, H2, TL1, TL2, TH1, TH2, extr_model, Ex_low, s_low, sigma, FWHM, a, E1, T, E0):
         '''
         Writes the counting.c input file
         '''
@@ -432,8 +439,8 @@ class normalization:
         lines.append(['{:.6f}'.format(self.A), '1.847000', '{:.6f}'.format(self.Sn), '{:.6f}'.format(rho), '{:.6f}'.format(drho)])
         lines.append([str(int(L1)), str(int(L2)), str(int(H1)), str(int(H2))])
         lines.append([str(int(TL1)), str(int(TL2)), str(int(TH1)), str(int(TH2))])
-        lines.append(['5', '18.280001', '-0.949000'])
-        lines.append(['2', '0.562000', '-1.884088'])
+        lines.append(['5', '{:.6f}'.format(a), '{:.6f}'.format(E1)])
+        lines.append(['2', '{:.6f}'.format(T), '{:.6f}'.format(E0)])
         lines.append([str(int(extr_model))])
         lines.append(['0', '-1000.000000', '-1000.000000'])
         lines.append(['0', '-1000.000000', '-1000.000000'])
@@ -535,7 +542,7 @@ class normalization:
         '''
         Load the input list for counting.c with default values
         '''
-        inputlist = [self.D0, self.L1, self.L2, self.H1, self.H2, self.TL1, self.TL2, self.TH1, self.TH2, self.extr_model, self.Ex_low, self.s_low, self.sigma, self.FWHM]
+        inputlist = [self.D0, self.L1, self.L2, self.H1, self.H2, self.TL1, self.TL2, self.TH1, self.TH2, self.extr_model, self.Ex_low, self.s_low, self.sigma, self.FWHM, self.a, self.E1, self.T, self.E0]
         return inputlist
     
     def prompt_grid_search(self, variable, lowlim, highlim, num):
@@ -605,10 +612,10 @@ class normalization:
                 
                 #extr_model can only be 1 or 2. If this is a free parameter, 1 or 2 will be picked at random.
                 if 'extr_model' in self.free_parameters:
-                    nld_inputlist[NLD_keys.index('extr_model')] = rng.randint(1,3)
+                    nld_inputlist[NLD_keys.index('extr_model')] = rng.integers(1,3)
                     
                 #finally, the floats
-                float_pars = ['D0', 'Ex_low', 's_low', 'sigma', 'FWHM']
+                float_pars = ['D0', 'Ex_low', 's_low', 'sigma', 'FWHM', 'a', 'E1', 'T', 'E0']
                 for float_par in float_pars:
                     if float_par in self.free_parameters:
                         par_range = getattr(self, float_par + '_range')

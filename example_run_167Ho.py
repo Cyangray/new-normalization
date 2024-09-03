@@ -43,7 +43,7 @@ Ho167norm.set_attributes(sigma = sigma,     # spin-cutoff parameter. float or li
                          target_spin = 7.0, # spin of the target nucleus (Z, N-1)
                          L1 = 7,            # lower limit of where to fit the nld to the known levels at low Ex. Can be given as a bin
                          #ExL1 = 0.2556,    # ...or can be given as an energy in MeV. This will be automatically translated to the closest bin
-                         L2 = 9,           # upper limit of where to fit the nld to the known levels at low Ex. Can again be given as a bin or an energy, independently of how L1 was given, but please provide both the upper or lower limit, otherwise both will be guessed
+                         L2 = 9,            # upper limit of where to fit the nld to the known levels at low Ex. Can again be given as a bin or an energy, independently of how L1 was given, but please provide both the upper or lower limit, otherwise both will be guessed
                          H1 = 30,           # The same is true for all L1, L2, H1, H2 etc
                          H2 = 47,
                          TL1 = 16,
@@ -53,9 +53,12 @@ Ho167norm.set_attributes(sigma = sigma,     # spin-cutoff parameter. float or li
                          s_low = 2.96,      # s_low and Ex_low are the average spin and its excitation energy at low Ex, from which one can run a linear fit to sigma at rho(Sn). (the ALEX method in counting.c. See ***add Guttormsen ref***)
                          Ex_low = 0.22,
                          Gg = 88.5,         # average partial γ-decay width (meV)
-                         dGg = 8.85,    # error in Gg
+                         dGg = 8.85,        # error in Gg
                          extr_model = 1,    # model used to extrapolate the nld to rho(Sn). 1 for constant temperature, 2 for Fermi gas. 
-                         FWHM = 150.0       # Full-width half-maximum
+                         FWHM = 150.0,      # Full-width half-maximum
+                         T = 0.562,         # Temperature for the CT extrapolation model
+                         #dT = 0.562*0.005, # do you want to add an uncertainty to the rho extrapolation parameter? You can do it. just add "d" in front of the name of the parameter, and put the value of the error. If you want to propagate this unertainty, remember to add, in this case, "T = ['err', 'err']" in set_variation_intervals below
+                         E0 = -1.884088     # E0 parameter
                          )
 
 '''
@@ -70,6 +73,8 @@ Ho167norm.set_variation_intervals(std_devs,     # std_devs: how many standard de
                        #TL2 = [16,22],
                        sigma = ['err', 'err'],
                        Gg = ['err', 'err'],
+                       #extr_model = 'yes',      # You don't know which extrapolation model to choose from? CT or FG? By writing "yes" you can pick randomly between the two in the MC simulation 
+                       #T = ['err', 'err'],
                        sigmaflat = True,        # default is sigmaflat = False. This tells how to treat the uncertainty within the spin-cutoff values, if 2 are given in "set attributes". sigmaflat = True assumes all values within the two given as equally probable, and outside this range, the respective dsigma standard deviations will apply. If sigmaflat = False, the two sigma values given in "set_attributes" will be considered as the lower and upper error, and an average will be calculated to be the most probable. See ***Ho paper***
                        D0flat = False)           # the same as for sigmaflat, but this time for D0.
 
@@ -99,7 +104,7 @@ talys_root_path = '/home/francesco/talys' #put your own path to the TALYS root f
 talys_executable_path = talys_root_path + '/bin/talys'
 talys_version = '2.00' #either '1.96' or '2.00'
 Ho167norm.set_TALYS_version(talys_root_path, talys_executable_path, talys_version)
-Ho167norm.calc_TALYS_models(load_lists = False, N_cores = 8, number_of_strength_models = 9)
+#Ho167norm.calc_TALYS_models(load_lists = False, N_cores = 8, number_of_strength_models = 9)
 
 '''
 8) plot graphs.

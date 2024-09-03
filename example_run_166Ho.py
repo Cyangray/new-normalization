@@ -48,14 +48,17 @@ Ho166norm.set_attributes(sigma = sigma,     # spin-cutoff parameter. float or li
                          H2 = 45,
                          TL1 = 18,
                          TL2 = 19,
-                         TH1 = 41,         # if you skip some, they will be guessed with the same algorithm as in counting.c. Try e.g. to comment out TH1 and TH2.
+                         TH1 = 41,          # if you skip some, they will be guessed with the same algorithm as in counting.c. Try e.g. to comment out TH1 and TH2.
                          TH2 = 45,
                          s_low = 4.5,       # s_low and Ex_low are the average spin and its excitation energy at low Ex, from which one can run a linear fit to sigma at rho(Sn). (the ALEX method in counting.c. See ***add Guttormsen ref***)
                          Ex_low = 0.2,
                          Gg = 84.0,         # average partial γ-decay width (meV)
                          dGg = 5.0,         # error in Gg
                          extr_model = 2,    # model used to extrapolate the nld to rho(Sn). 1 for constant temperature, 2 for Fermi gas. 
-                         FWHM = 150.0       # Full-width half-maximum
+                         FWHM = 150.0,      # Full-width half-maximum
+                         a = 18.280001,     # a parameter for the Fermi gas etrapolation
+                         #da = 18.280001*0.01, # do you want to add an uncertainty to the rho extrapolation parameter? You can do it. just add "d" in front of the name of the parameter, and put the value of the error. If you want to propagate this unertainty, remember to add, in this case, "a = ['err', 'err']" in set_variation_intervals below
+                         E1 = -0.949000    # E1 parameter
                          )
 
 '''
@@ -70,6 +73,7 @@ Ho166norm.set_variation_intervals(std_devs,     # std_devs: how many standard de
                        #TL2 = [16,22],
                        sigma = ['err', 'err'],
                        Gg = ['err', 'err'],
+                       #a = ['err', 'err'],
                        sigmaflat = True,        # default is sigmaflat = False. This tells how to treat the uncertainty within the spin-cutoff values, if 2 are given in "set attributes". sigmaflat = True assumes all values within the two given as equally probable, and outside this range, the respective dsigma standard deviations will apply. If sigmaflat = False, the two sigma values given in "set_attributes" will be considered as the lower and upper error, and an average will be calculated to be the most probable. See ***Ho paper***
                        D0flat = False)           # the same as for sigmaflat, but this time for D0.
 
@@ -99,7 +103,7 @@ talys_root_path = '/home/francesco/talys' #put your own path to the TALYS root f
 talys_executable_path = talys_root_path + '/bin/talys' #for example
 talys_version = '2.00' #either '1.96' or '2.00'
 Ho166norm.set_TALYS_version(talys_root_path, talys_executable_path, talys_version)
-Ho166norm.calc_TALYS_models(load_lists = False, N_cores = 8, number_of_strength_models = 9)
+#Ho166norm.calc_TALYS_models(load_lists = False, N_cores = 8, number_of_strength_models = 9)
 
 '''
 8) plot graphs.
