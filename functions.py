@@ -101,7 +101,7 @@ def calc_errors_chis(lst, lab, return_best_fit = False):
         
         #calc_errors_chis_core(y, isrho = False)
         for graph in lst:
-            if not np.isnan(graph.y[i]):
+            if (not np.isnan(graph.y[i])) and (graph.y[i] != 0.0):
                 if x == xx[-1] and lab == 'nld':
                     chis.append(graph.rhoSn_chi2)
                 else:

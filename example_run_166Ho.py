@@ -88,7 +88,7 @@ Ho166norm.import_low_Ex_nld()
 '''
 opt_range = [0.9,1.1] # before running the MC simulation, the algorithm does a quick, mini-gridsearch with the most probable values. opt_range tells how far away from the suggested values one should stride.
 MC_range = 1000       # the number of MC simulations
-Ho166norm.MC_normalization(opt_range = opt_range, MC_range = MC_range, load_lists = False)
+Ho166norm.MC_normalization(opt_range = opt_range, MC_range = MC_range, N_cores = 8, load_lists = False)
 
 '''
 6) translates the results into readable tables.
@@ -109,7 +109,7 @@ Ho166norm.set_TALYS_version(talys_root_path, talys_executable_path, talys_versio
 8) plot graphs.
 '''
 Ho166norm.plot_graphs()
-
+"""
 '''
 9) Run TALYS many times to calculate the ncrates and MACSs.
 9a) First, you have to define "high_energy_extrap": a (2,n) array with energies and gsf for higher energies. For example, this could be the experimental GDR data for a nearby nucleus, or an exponential extrapolation
@@ -148,3 +148,4 @@ print(f'Whole parallel TALYS simulation ended in {finish_whole - start_whole} se
 10) write results into human readable tables
 '''
 Ho166norm.write_ncrate_MACS_tables(load_lists = False, label = '')
+"""
