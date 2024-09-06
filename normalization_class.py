@@ -16,7 +16,8 @@ import matplotlib.pyplot as plt
 from subprocess import call
 import os
 from scipy.special import erf
-from nld_gsf_classes import import_ocl, nld, gsf, ncrate, MACS
+from scipy.integrate import quad
+from nld_gsf_classes import import_ocl, nld, gsf, nld_p, gsf_p, ncrate, MACS
 rng = np.random.default_rng()
 import shutil
 from utils import Z2Name
@@ -49,6 +50,8 @@ class normalization:
         rhosp = np.genfromtxt(self.rsc_folderpath + '/rhosp.rsg', skip_header=6, max_rows = 1, delimiter =',')
         self.a0 = rhosp[1]/1000
         self.a1 = rhosp[2]/1000
+        self.FGmax = int(100/self.a1)
+        self.NchBn = 1 + int((self.Sn - self.a0)/self.a1 + 0.5)
         rhopaw_path = self.rsc_folderpath + '/rhopaw.rsg'
         self.rhopaw = import_ocl(rhopaw_path, self.a0, self.a1)
         sigpaw_path = self.rsc_folderpath + '/sigpaw.rsg'
@@ -58,6 +61,10 @@ class normalization:
         self.dim = min(self.rhopaw_length, self.sigpaw_length)
         self.TALYS_models = False
         self.TALYS_ver = None
+        self.start_spin = 0.5
+        if self.A % 2 == 0:
+            self.start_spin = 0
+            
         
     def to_energy(self,index):
         #transforms index to energy
@@ -375,12 +382,12 @@ class normalization:
     
     def NLD_from_countingdat(self, all_levels, Ex, binsize):
         
-        nld = 0
+        ld = 0
         bin_lowlim = Ex - binsize/2
         bin_highlim = Ex + binsize/2
         for el in all_levels:
             if bin_lowlim <= el < bin_highlim:
-                nld += 1
+                ld += 1
         
         ans = nld/abs(self.a1)
         
@@ -431,7 +438,7 @@ class normalization:
             self.import_low_Ex_nld_raw(countingdat_path = countingdat_path, binsize = binsize)
             self.nld_lvl = self.nld_lvl_raw
     
-    def write_input_cnt(self, rho, drho, D0, L1, L2, H1, H2, TL1, TL2, TH1, TH2, extr_model, Ex_low, s_low, sigma, FWHM, a, E1, T, E0):
+    def write_input_cnt(self, rho, drho, D0, L1, L2, H1, H2, TL1, TL2, TH1, TH2, extr_model, Ex_low, s_low, sigma, FWHM, a, E1, T, E0): #TODO: obsolete
         '''
         Writes the counting.c input file
         '''
@@ -475,28 +482,394 @@ class normalization:
                 
         current_rho = D2rho(vardict['D0'], self.target_spin, vardict['sigma'])
         current_drho = drho(self.target_spin, vardict['sigma'], vardict['dsigma'], vardict['D0'], vardict['dD0'], rho = current_rho)
-        self.write_input_cnt(current_rho, current_drho, *inputlist)
-        #TODO: the following line runs the modified counting.c script. It takes the newly written input file input.cnt and it writes all the normal output files.
-        call([self.counting_code_path])
-        #TODO: ...these files are then read and stored in an instantiation of the nld class. It would be nice in the future if the program was purely python, and "counting" was just a python function. Potentially, something Ompy already has.
-        curr_nld = nld('rhopaw.cnt', a0 = self.a0, a1 = self.a1)
+        D0, L1, L2, H1, H2, TL1, TL2, TH1, TH2, extr_model, Ex_low, s_low, sigma, FWHM, a, E1, T, E0 = inputlist
+        
+        #TODO: evaluate E0 automatically, as done in counting, or should it be user defined?
+        #TODO: same for T
+        
+        b2 = (sigma**2 - s_low**2)/(self.Sn - Ex_low)
+        b1 = s_low**2 - b2*Ex_low;
+        
+        _, rhoSn_extrap = self.rhofg(self.Sn, a, T, E1, E0, extr_model, b1, b2)
+        eta = current_rho/rhoSn_extrap
+        
+        Lm = int((L1 + L2)/2)
+        Hm = int((H1 + H2)/2)
+        c1 = (self.rhopaw[Lm-1, 1] + self.rhopaw[Lm, 1] + self.rhopaw[Lm+1, 1]) / 3.
+        c2 = (self.rhopaw[Hm-1, 1] + self.rhopaw[Hm, 1] + self.rhopaw[Hm+1, 1]) / 3.
+        rhoL = (self.nld_lvl[Lm-1, 1] + self.nld_lvl[Lm, 1] + self.nld_lvl[Lm+1, 1]) / 3.
+        rhoL = max(rhoL, 0.01)
+        e1 = self.a0 + self.a1 * Lm
+        e2 = self.a0 + self.a1 * Hm
+        _, rhox = self.rhofg(e2, a, T, E1, E0, extr_model, b1, b2)
+        alpha = (np.log(rhoL) + np.log(c2) - np.log(eta*rhox) - np.log(c1)) / (e1-e2)
+        Anorm = np.exp(-alpha*e1) * (rhoL)/c1
+        c1 = c1/self.corrL(L1, L2, alpha, Anorm)
+        c2 = c2/self.corrH(H1, H2, alpha, Anorm, a, T, E1, E0, extr_model, b1, b2, eta)
+        
+        _, rhox = self.rhofg(e2, a, T, E1, E0, extr_model, b1, b2)
+        alpha = (np.log(rhoL) + np.log(c2) - np.log(eta*rhox) - np.log(c1)) / (e1-e2)
+        Anorm = np.exp(-alpha*e1) * (rhoL)/c1
+        
+        #write extrapolation
+        
+        energies = [self.a0 + self.a1*i for i in range(self.FGmax)]
+        extr_mat = np.c_[energies, [self.rhofg(Ex, a, T, E1, E0, extr_model, b1, b2)[1]*eta for Ex in energies]]
+        
+        #write rhotmopaw
+        rhotmopaw = np.zeros_like(energies)
+        for i, Ex in enumerate(energies):
+            if i<H1:
+                rhotmopaw[i] = Anorm*np.exp(alpha * Ex)*self.rhopaw[i,1]
+            else:
+                _, rhox = self.rhofg(Ex, a, T, E1, E0, extr_model, b1, b2)
+                rhotmopaw[i] = eta*rhox
+        
+        #write normalized rho
+        rho_mat = np.zeros((self.dim, 3))
+        for i in range(self.dim):
+            Ex = self.a0 + self.a1*i
+            rho_mat[i,0] = Ex
+            rho_mat[i,1] = Anorm * np.exp(alpha*Ex)*self.rhopaw[i,1]
+            rho_mat[i,2] = Anorm * np.exp(alpha*Ex)*self.rhopaw[i,2]
+        
+        #write sigpaw
+        sig_mat = np.zeros((self.dim, 3))
+        for i in range(self.dim):
+            Eg = self.a0 + self.a1*i
+            sig_mat[i,0] = Eg
+            sig_mat[i,1] = Anorm * np.exp(alpha*Eg)*self.sigpaw[i,1]
+            sig_mat[i,2] = Anorm * np.exp(alpha*Eg)*self.sigpaw[i,2]
+        
+        #extend sig_mat
+        sigdimBn = (self.Sn + 0.5 - self.a0)/self.a1 + 0.5
+        sigdimBn = int(max(sigdimBn, self.dim))
+        nsigL = self.extendL(TL1, TL2, sigdimBn, sig_mat)
+        nsigH = self.extendH(TH1, TH2, self.FGmax, sig_mat)
+        sigpawext = np.zeros(int(self.FGmax/5))
+        for i in range(int(self.FGmax/5)):
+            if i < TL2 + 1:
+                sigpawext[i] = nsigL[i,1]
+            elif i < TH1:
+                sigpawext[i] = sig_mat[i,1]
+            else:
+                sigpawext[i] = nsigH[i,1]
+        
+        #write spincut
+        spincut = np.zeros(self.dim*3)
+        sigma2 = np.zeros(self.FGmax)
+        for i in range(max(3*self.dim, self.FGmax)):
+            Ex = self.a0 + self.a1*i
+            sig2, _ = self.rhofg(Ex, a, T, E1, E0, extr_model, b1, b2)
+            if i < 3*self.dim:
+                spincut[i] = np.sqrt(sig2)
+            if i < self.FGmax:
+                sigma2[i] = sig2
+        
+        
+        curr_nld = nld_p(rho_mat)
         curr_nld.clean_nans()
         curr_nld.add_rhoSn(self.Sn, current_rho, current_drho)
-        Anorm, alpha = import_Anorm_alpha('alpha.txt')
         for key,value in vardict.items():
             setattr(curr_nld, key, value)
         curr_nld.Anorm = Anorm
         curr_nld.alpha = alpha
         curr_nld.rho = current_rho
         curr_nld.drho = current_drho
-        extr_mat = import_ocl('fermigas.cnt', self.a0, self.a1, no_errcol = True)
         curr_nld.extr_mat = extr_mat
         curr_nld.rhoSn_chi2 = self.rho_chi2score([vardict[variable] for variable in self.rho_variables])
         curr_nld.chi2 = self.low_levels_chi2(self.nld_lvl, curr_nld) + curr_nld.rhoSn_chi2
-        curr_nld.talys_nld_cnt = np.genfromtxt('talys_nld_cnt.txt')
+        curr_nld.sig_mat = sig_mat
+        curr_nld.rhotmopaw = rhotmopaw
+        curr_nld.sigpawext = sigpawext
+        curr_nld.spincut = spincut
+        curr_nld.sigma2 = sigma2
+        curr_nld.b1 = b1
+        curr_nld.b2 = b2
+        curr_nld.extr_model = extr_model
+        curr_nld.talys_nld_cnt = self.nld_talys(curr_nld)
+        curr_nld.Int = self.normalization_integral(curr_nld)
+        curr_nld.eta = eta
         return curr_nld
-
-    def write_input_nrm(self, Gg, curr_nld):
+        
+    def nld_talys(self, curr_nld):
+        stop_spin = 30   # Spin loop stops after 30 iterations
+        n_cum = 0.       # Cumulative number of levels, different bin size on Ex!
+        ex_bin1 = 0.25   # 0.25 MeV from Ex=0.25 - 5.00 MeV, i= 0-19
+        ex_bin2 = 0.50   # 0.50 MeV from Ex=5.50 - 10.0 MeV, i=20-29
+        ex_bin3 = 1.00   # 1.00 MeV from Ex=11.0 - 20.0 MeV, i=30-39
+        ex_bin4 = 2.50   # 2.50 MeV from Ex=22.5 - 25.0 MeV, i=40-41
+        ex_bin5 = 5.00   # 5.00 MeV from Ex=25.0 - 30.0 MeV, i=41-42
+        ex_bin6 = 10.0   # 10.0 MeV from Ex=30.0 - 150. MeV, i=43-54
+        
+        #make energy array for TALYS:
+        energies = np.zeros(56)
+        
+        energies[0] = ex_bin1
+        for i in range(55):
+            if i < 19:
+                energies[i+1] = energies[i] + ex_bin1
+            elif i < 29:
+                energies[i+1] = energies[i] + ex_bin2
+            elif i < 39:
+                energies[i+1] = energies[i] + ex_bin3
+            elif i < 41:
+                energies[i+1] = energies[i] + ex_bin4
+            elif i < 42:
+                energies[i+1] = energies[i] + ex_bin5
+            elif i < 55:
+                energies[i+1] = energies[i] + ex_bin6
+        nld_calc = np.zeros(56)
+        #temp_calc = np.zeros(56)
+        talys_nld_cnt = np.zeros((56,35))
+        for i in range(56):
+            nld_calc[i] = self.rhoexp(energies[i], curr_nld.rhotmopaw)
+            if nld_calc[i] > 1e30:
+                break
+            if i < 20:
+                n_cum += nld_calc[i]*ex_bin1
+            elif i < 30:
+                n_cum += nld_calc[i]*ex_bin2
+            elif i < 40:
+                n_cum += nld_calc[i]*ex_bin3
+            elif i < 42:
+                n_cum += nld_calc[i]*ex_bin4
+            elif i < 43:
+                n_cum += nld_calc[i]*ex_bin5
+            elif i < 55:
+                n_cum += nld_calc[i]*ex_bin6
+            
+            talys_nld_cnt[i,0] = energies[i]
+            talys_nld_cnt[i,1] = self.temperature(energies[i], curr_nld.rhotmopaw)
+            talys_nld_cnt[i,2] = n_cum
+            talys_nld_cnt[i,3] = nld_calc[i]
+            talys_nld_cnt[i,4] = nld_calc[i]
+            for j in range(stop_spin):
+                I = j + self.start_spin
+                x = nld_calc[i]*self.spin_distribution(energies[i], I, curr_nld.sigma2)
+                talys_nld_cnt[i,4+j] = x
+        return talys_nld_cnt
+        
+    def rhoexp(self, Ex, rhotmopaw):
+        for i in range(self.FGmax):
+            if ((self.a0 + self.a1*i)/1000) > Ex:
+                break
+        i2 = i
+        i1 = i2-1
+        rhox = rhotmopaw[i1] + ((rhotmopaw[i2]-rhotmopaw[i1])/self.a1)*(Ex-(self.a0 + self.a1*i1))
+        return rhox
+    
+    def temperature(self, Ex, rhotmopaw):
+        for i in range(self.FGmax):
+            if self.a0 + self.a1*i > Ex:
+                break
+        i2 = i
+        i1 = i2-1
+        num = 0
+        temp = 0
+        temp0 = 0
+        tempL = 0
+        tempH = 0
+        if (rhotmopaw[i1] > 0) and (rhotmopaw[i2] > 0) and (rhotmopaw[i2] > rhotmopaw[i1]):
+            temp0 = self.a1/(np.log(rhotmopaw[i2]) - np.log(rhotmopaw[i1]))
+            num = num + 1
+        if (i1 > 0) and (rhotmopaw[i1 - 1] > 0) and (rhotmopaw[i2 - 1] > 0) and (rhotmopaw[i2 - 1] > rhotmopaw[i1 - 1]):
+            tempL = self.a1/(np.log(rhotmopaw[i2-1]) - np.log(rhotmopaw[i1-1]))
+            num = num + 1
+        if (i2 < 8192-1) and (rhotmopaw[i1 + 1] > 0) and (rhotmopaw[i2 + 1] > 0) and (rhotmopaw[i2 + 1] > rhotmopaw[i1 + 1]):
+            tempH = self.a1/(np.log(rhotmopaw[i2+1]) - np.log(rhotmopaw[i1+1]))
+            num = num + 1
+        if num > 0:
+            temp = (tempL + temp0 + tempH)/num
+        return temp
+    
+    def spin_distribution(self, Ex, I, sigma2):
+        for i in range(self.FGmax):
+            if self.a0 + self.a1*i > Ex:
+                break
+        i2 = i
+        i1 = i2-1
+        s2 = sigma2[i1] + ((sigma2[i2] - sigma2[i1])/self.a1) * (Ex - (self.a0 + self.a1*i1) )
+        s2 = max(s2, 1.0)
+        g_Ex = (2*I + 1)*np.exp(-(I+0.5)**2/(2*s2)) / (2*s2)
+        if g_Ex > 1e-20:
+            return g_Ex
+        else:
+            return 0.
+    
+    def corrL(self, L1, L2, alpha, Anorm):
+        corrbest = 0
+        corr = 0.25
+        sumbest = 1e21
+        free = L2 - L1
+        if free <= 0:
+            free = 1
+        for j in range(3751):
+            corr = corr + 0.001
+            sum = 0.0
+            for i in range(L1, L2+1):
+                Ex = self.a0 + self.a1*i
+                rhoL = max(self.nld_lvl[i, 1], 0.01)
+                cc = corr * Anorm * np.exp(alpha*Ex) * self.rhopaw[i, 1]
+                dc2 = (corr * Anorm * np.exp(alpha*Ex) * self.rhopaw[i, 2])**2
+                dc2 = np.sqrt(dc2*dc2 + 1)
+                if dc2 > 0:
+                    sum += (cc - rhoL) * (cc - rhoL) / dc2
+            
+            sum = sum/free
+            #if j == 499:
+            #    sum0 = sum
+            if sum <= sumbest:
+                sumbest = sum
+                corrbest= corr
+            
+        return corrbest
+    
+    def corrH(self, H1, H2, alpha, Anorm, a, T, E1, E0, extr_model, b1, b2, eta):
+        corrbest = 0
+        corr = 0.25
+        sumbest = 1e21
+        free = H2 - H1
+        if free <= 0:
+            free = 1
+        for j in range(3751):
+            corr = corr + 0.001
+            sum = 0.0
+            for i in range(H1, H2+1):
+                Ex = self.a0 + self.a1*i
+                cc = corr * Anorm * np.exp(alpha*Ex) * self.rhopaw[i, 1]
+                dc2 = (corr * Anorm * np.exp(alpha*Ex) * self.rhopaw[i, 2])**2
+                _, rhox = self.rhofg(Ex, a, T, E1, E0, extr_model, b1, b2)
+                dc2 = np.sqrt(dc2*dc2 + 1)
+                if dc2 > 0:
+                    sum += (cc - eta * rhox)**2 / dc2
+            sum = sum/free
+            #if j == 499:
+            #    sum0 = sum
+            if sum <= sumbest:
+                sumbest = sum
+                corrbest = corr
+        
+        return corrbest
+    
+    def extendL(self, TL1, TL2, sigdimBn, nsig):
+        nsigL = np.zeros((8192,3))
+        steps = 1000
+        abest = 0
+        bbest = 0
+        x1 = self.a0 + self.a1*TL1
+        x2 = self.a0 + self.a1*TL2
+        y1 = np.log(nsig[TL1, 1])
+        y2 = np.log(nsig[TL2, 1]) 
+        if TL2 - TL1 > 3:
+            x1 = self.a0 + self.a1*TL1 + 0.5
+            x2 = self.a0 + self.a1*TL2 + 0.5
+            y1 = (np.log(nsig[TL1, 1]) + np.log(nsig[TL1 + 1, 1]))/2
+            y2 = (np.log(nsig[TL2, 1]) + np.log(nsig[TL2 - 1, 1]))/2
+        ai = (y2-y1)/x2-x1
+        bi = y1 - ai * x1
+        al = ai/3
+        ah = ai*3
+        astep = (ah - al)/steps
+        bh = bi + 2 * ai * (x2 - x1)
+        bl = bi - 2 * ai * (x2 - x1)
+        bstep = (bh - bl)/steps
+        
+        chibest = 999999999.9
+        bb = bl
+        for i in range(steps):
+            bb = bb + bstep
+            aa = al 
+            for j in range(steps):
+                aa = aa + astep
+                chi = 0
+                for k in range(TL1, TL2+1):
+                    if (nsig[k, 1] <= 0) or (nsig[k, 2] <= 0):
+                        break
+                    x = self.a0 + self.a1*k
+                    y = aa * x + bb
+                    yi = np.log(nsig[k,1])
+                    dyi = nsig[k,2]/nsig[k,1]
+                    chi = chi + (y-yi)**2/dyi**2
+                chi = chi/(TL2-TL1)
+                if (chi < chibest) and (chi > 0):
+                    chibest = chi
+                    abest = aa
+                    bbest = bb
+        abestL = abest - 3/x1
+        bbestL = bbest + 3*(1 - np.log(x1))
+        for i in range(sigdimBn):
+            x = self.a0 + self.a1*i
+            nsigL[i,1] = np.exp(abest * x + bbest)
+            if i < TL1:
+                nsigL[i,1] = x**3 * np.exp(abestL * x + bbestL)
+        return nsigL
+    
+    def extendH(self, TH1, TH2, FGmax, nsig):
+        nsigH = np.zeros((8192,3))
+        steps = 1000
+        abest = 0
+        bbest = 0
+        x1 = self.a0 + self.a1*TH1
+        x2 = self.a0 + self.a1*TH2
+        y1 = np.log(nsig[TH1, 1])
+        y2 = np.log(nsig[TH2, 1]) 
+        if TH2 - TH1 > 3:
+            x1 = self.a0 + self.a1*TH1 + 0.5
+            x2 = self.a0 + self.a1*TH2 + 0.5
+            y1 = (np.log(nsig[TH1, 1]) + np.log(nsig[TH1 + 1, 1]))/2
+            y2 = (np.log(nsig[TH2, 1]) + np.log(nsig[TH2 - 1, 1]))/2
+        ai = (y2-y1)/x2-x1
+        bi = y1 - ai * x1
+        al = ai/3
+        ah = ai*3
+        astep = (ah - al)/steps
+        bh = bi + 2 * ai * (x2 - x1)
+        bl = bi - 2 * ai * (x2 - x1)
+        bstep = (bh - bl)/steps
+        
+        chibest = 999999999.9
+        bb = bl
+        for i in range(steps):
+            bb = bb + bstep
+            aa = al 
+            for j in range(steps):
+                aa = aa + astep
+                chi = 0
+                for k in range(TH1, TH2 + 1):
+                    if (nsig[k, 1] <= 0) or (nsig[k, 2] <= 0):
+                        break
+                    x = self.a0 + self.a1*k
+                    y = aa * x + bb
+                    yi = np.log(nsig[k,1])
+                    dyi = nsig[k,2]/nsig[k,1]
+                    chi = chi + (y-yi)**2/dyi**2
+                chi = chi/(TH2-TH1)
+                if (chi < chibest) and (chi > 0):
+                    chibest = chi
+                    abest = aa
+                    bbest = bb
+        abestH = abest
+        bbestH = bbest
+        for i in range(int(FGmax/5)):
+            x = self.a0 + self.a1*i
+            nsigH[i,1] = np.exp(abestH * x + bbestH)
+        return nsigH
+    
+    def rhofg(self, ex, a, T, E1, E0, imodel, b1, b2):
+        rhox = 0.1
+        uCT = max(0.005, ex - E0)
+        uFG = max(0.005, ex - E1)
+        sig2 = max(0.5, b1 + b2*ex)
+        
+        if imodel == 1:
+            rhox = np.exp(uCT/T)/T
+        if imodel == 2:
+            uFG = max((25./16.)/a, uFG)
+            rhox = np.exp(2*np.sqrt(a*uFG))/(12*np.sqrt(2*sig2)*a**0.25*uFG**1.25)
+        return sig2, rhox
+        
+    def write_input_nrm(self, Gg, curr_nld): #TODO:obsolete?
         '''
         Writes the normalization.c input file
         '''
@@ -515,21 +888,150 @@ class normalization:
         
         with open('input.nrm', 'w') as write_obj:
             write_obj.write(newinput_nrm)
+            
+    def normalization_integral(self, curr_nld):
+        
+        '''
+        runs the normalization.c integral, now translated in Python,
+        and returns the integral result
+        '''
+        Eres = 400.
+        de = 10.
+        Bn_keV = self.Sn*1000
+        It = self.target_spin
+        eg = 0
+        
+        if It == 0.0:
+            while eg < Bn_keV + Eres:
+                ex = Bn_keV - eg
+                Teg = self.T_eg(eg, curr_nld)
+                rhoex = self.rho_ex(ex, curr_nld)
+                sigex = self.sig_ex(ex, curr_nld)
+                int3 = Teg*rhoex * (It / sigex) * np.exp(-(It + 1)**2 / sigex)
+                int4 = Teg*rhoex * (It / sigex) * np.exp(-(It + 2)**2 / sigex)
+                eg += de
+            Int = int3 + int4
+            return Int
+            
+            """
+            def integrand(eg, Bn_keV, It, curr_nld):
+                ex = Bn_keV - eg
+                Teg = self.T_eg(eg, curr_nld)
+                rhoex = self.rho_ex(ex, curr_nld)
+                sigex = self.sig_ex(ex, curr_nld)
+                int1 = Teg*rhoex * (It / sigex) * np.exp(-(It + 1)**2 / sigex)
+                int2 = Teg*rhoex * (It / sigex) * np.exp(-(It + 2)**2 / sigex)
+                return int1 + int2
+            
+            Int = quad(integrand, 0.0, Bn_keV + Eres, args=(Bn_keV, It, curr_nld), limit = int((Bn_keV + Eres)/de), epsabs = 1.0)
+            """
+        elif It == 0.5:
+            while eg < Bn_keV + Eres:
+                ex = Bn_keV - eg
+                Teg = self.T_eg(eg, curr_nld)
+                rhoex = self.rho_ex(ex, curr_nld)
+                sigex = self.sig_ex(ex, curr_nld)
+                int2 = Teg*rhoex * (It / sigex) * np.exp(-(It - 0)**2 / sigex)
+                int3 = Teg*rhoex * (It / sigex) * np.exp(-(It + 1)**2 / sigex)
+                int4 = Teg*rhoex * (It / sigex) * np.exp(-(It + 2)**2 / sigex)
+                eg += de
+            Int = int2 + 2*int3 + int4
+            return Int
+            
+            """
+            def integrand(eg, Bn_keV, It, curr_nld):
+                ex = Bn_keV - eg
+                Teg = self.T_eg(eg, curr_nld)
+                rhoex = self.rho_ex(ex, curr_nld)
+                sigex = self.sig_ex(ex, curr_nld)
+                int1 = Teg*rhoex * (It / sigex) * np.exp(-(It - 0)**2 / sigex)
+                int2 = Teg*rhoex * (It / sigex) * np.exp(-(It + 1)**2 / sigex)
+                int3 = Teg*rhoex * (It / sigex) * np.exp(-(It + 2)**2 / sigex)
+                return int1 + 2*int2 + int3
+            Int = quad(integrand, 0.0, Bn_keV + Eres, args=(Bn_keV, It, curr_nld), limit = int((Bn_keV + Eres)/de), epsabs = 1.0)
+            """
+        elif It == 1.0:
+            while eg < Bn_keV + Eres:
+                ex = Bn_keV - eg
+                Teg = self.T_eg(eg, curr_nld)
+                rhoex = self.rho_ex(ex, curr_nld)
+                sigex = self.sig_ex(ex, curr_nld)
+                int2 = Teg*rhoex * (It / sigex) * np.exp(-(It - 0)**2 / sigex)
+                int3 = Teg*rhoex * (It / sigex) * np.exp(-(It + 1)**2 / sigex)
+                int4 = Teg*rhoex * (It / sigex) * np.exp(-(It + 2)**2 / sigex)
+                eg += de
+            Int = 2*int2 + 2*int3 + int4
+            return Int
+            
+            """
+            def integrand(eg, Bn_keV, It, curr_nld):
+                ex = Bn_keV - eg
+                Teg = self.T_eg(eg, curr_nld)
+                rhoex = self.rho_ex(ex, curr_nld)
+                sigex = self.sig_ex(ex, curr_nld)
+                int1 = Teg*rhoex * (It / sigex) * np.exp(-(It - 0)**2 / sigex)
+                int2 = Teg*rhoex * (It / sigex) * np.exp(-(It + 1)**2 / sigex)
+                int3 = Teg*rhoex * (It / sigex) * np.exp(-(It + 2)**2 / sigex)
+                return 2*int1 + 2*int2 + int3
+            Int = quad(integrand, 0.0, Bn_keV + Eres, args=(Bn_keV, It, curr_nld), limit = int((Bn_keV + Eres)/de), epsabs = 1.0)
+            """
+        elif It > 1.0:
+            while eg < Bn_keV + Eres:
+                ex = Bn_keV - eg
+                Teg = self.T_eg(eg, curr_nld)
+                rhoex = self.rho_ex(ex, curr_nld)
+                sigex = self.sig_ex(ex, curr_nld)
+                int1 = Teg*rhoex * (It / sigex) * np.exp(-(It - 1)**2 / sigex)
+                int2 = Teg*rhoex * (It / sigex) * np.exp(-(It - 0)**2 / sigex)
+                int3 = Teg*rhoex * (It / sigex) * np.exp(-(It + 1)**2 / sigex)
+                int4 = Teg*rhoex * (It / sigex) * np.exp(-(It + 2)**2 / sigex)
+                eg += de
+            Int = int1 + 2*int2 + 2*int3 + int4
+            return Int
+            
+            
+            
+            """
+            def integrand(eg, Bn_keV, It, curr_nld):
+                ex = Bn_keV - eg
+                Teg = self.T_eg(eg, curr_nld)
+                rhoex = self.rho_ex(ex, curr_nld)
+                sigex = self.sig_ex(ex, curr_nld)
+                int1 = Teg*rhoex * (It / sigex) * np.exp(-(It - 1)**2 / sigex)
+                int2 = Teg*rhoex * (It / sigex) * np.exp(-(It - 0)**2 / sigex)
+                int3 = Teg*rhoex * (It / sigex) * np.exp(-(It + 1)**2 / sigex)
+                int4 = Teg*rhoex * (It / sigex) * np.exp(-(It + 2)**2 / sigex)
+                return int1 + 2*int2 + 2*int3 + int4
+            
+            Int = quad(integrand, 0.0, Bn_keV + Eres, args=(Bn_keV, It, curr_nld), limit = int((Bn_keV + Eres)/de), epsabs = 1.0)
+            
+            return Int[0]
+            """
 
     def run_GSF_sim(self, current_Gg, curr_nld):
-        '''
-        runs the normalization.c program, and reads and save the results in a gsf object,
-        and returns the instance
-        '''
-        self.write_input_nrm(current_Gg, curr_nld)
         
-        #TODO: the following line runs the modified normalization.c script. It takes the newly written input file input.nrm and it writes all the normal output files.
-        call([self.normalization_code_path]);
-        #TODO: ...these files are then read and stored in an instantiation of the gsf class. It would be nice in the future if the program was purely python, and "normalization" was just a python function. Potentially, something Ompy already has.
-        curr_gsf = gsf('strength.nrm', a0 = self.a0, a1 = self.a1)
+        Int = curr_nld.Int
+        
+        D0 = curr_nld.D0
+        #Int = Int * de
+        Fac = Int * D0 / current_Gg
+        
+        #write gsf
+        gsf_rawmat = np.zeros_like(curr_nld.sig_mat)
+        for i in range(len(gsf_rawmat)):
+            Eg = self.a0 + self.a1*i
+            gsf_rawmat[i,0] = Eg
+            if Eg > 0:
+                if Fac == 0.0:
+                    gsf_rawmat[i,1] = np.nan
+                    gsf_rawmat[i,2] = np.nan
+                else:
+                    gsf_rawmat[i,1] = curr_nld.sig_mat[i,1]/(Fac*Eg**3)
+                    gsf_rawmat[i,2] = curr_nld.sig_mat[i,2]/(Fac*Eg**3)
+        
+        curr_gsf = gsf_p(gsf_rawmat)
         curr_gsf.clean_nans()
-        Bnorm = import_Bnorm('input.nrm')
-        curr_gsf.Bnorm = Bnorm
+        curr_gsf.Bnorm = Fac
         curr_gsf.D0 = curr_nld.D0
         curr_gsf.FWHM = curr_nld.FWHM
         curr_gsf.Gg = current_Gg
@@ -537,27 +1039,110 @@ class normalization:
         curr_gsf.chi2 = curr_nld.chi2 + ((self.Gg - curr_gsf.Gg)/self.dGg)**2
         
         return curr_gsf
+        
     
-    def initialize_nld_inputlist(self):
+    def T_eg(self, eg, curr_nld):
+        i2 = -1
+        for ii in range(self.NchBn):
+            if eg > (self.a0 + self.a1*ii)*1000:
+                i2 = ii + 1
+        if i2 == -1 or i2 > self.NchBn-1:
+            i2 = self.NchBn - 1
+        if i2 == 0:
+            i2 = 1
+        i1 = i2 - 1
+        eg1 = (self.a0 + self.a1*i1)*1000
+        eg2 = (self.a0 + self.a1*i2)*1000
+        Teg = curr_nld.sigpawext[i1] + (curr_nld.sigpawext[i2] - curr_nld.sigpawext[i1])*(eg-eg1)/(eg2-eg1)
+        Teg = max(Teg, 1e-10)
+        return Teg
+    
+    def rho_ex(self, ex, curr_nld):
+        i2 = -1
+        for ii in range(self.NchBn):
+            if ex > (self.a0 + self.a1*ii)*1000:
+                i2 = ii + 1
+        if i2 == -1 or i2 > self.NchBn-1:
+            i2 = self.NchBn - 1
+        if i2 == 0:
+            i2 = 1
+        i1 = i2 - 1
+        ex1 = (self.a0 + self.a1*i1)*1000
+        ex2 = (self.a0 + self.a1*i2)*1000
+        rhox = curr_nld.rhotmopaw[i1] + (curr_nld.rhotmopaw[i2] - curr_nld.rhotmopaw[i1])*(ex - ex1)/(ex2 - ex1)
+        rhox = max(rhox, 0)
+        return rhox
+    
+    def sig_ex(self, ex, curr_nld):
+        i2 = -1
+        for ii in range(self.NchBn):
+            if ex > (self.a0 + self.a1*ii)*1000:
+                i2 = ii + 1
+        if i2 == -1 or i2 > self.NchBn-1:
+            i2 = self.NchBn - 1
+        if i2 == 0:
+            i2 = 1
+        i1 = i2 - 1
+        ex1 = (self.a0 + self.a1*i1)*1000
+        ex2 = (self.a0 + self.a1*i2)*1000
+        sigx = 2*curr_nld.spincut[i1]**2 + (2*curr_nld.spincut[i2]**2 - 2*curr_nld.spincut[i1]**2)*(ex - ex1)/(ex2 - ex1)
+        sigx = max(sigx, 0.01)
+        return sigx
+    
+    def initialize_nld_inputlist(self): #TODO: obsolete?
         '''
         Load the input list for counting.c with default values
         '''
         inputlist = [self.D0, self.L1, self.L2, self.H1, self.H2, self.TL1, self.TL2, self.TH1, self.TH2, self.extr_model, self.Ex_low, self.s_low, self.sigma, self.FWHM, self.a, self.E1, self.T, self.E0]
         return inputlist
     
-    def prompt_grid_search(self, variable, lowlim, highlim, num):
+    def make_MC_func(self, nld_inputlists, Ggs):
+        
+        def MC_func(i):
+            curr_gsfs = []
+            nld_inputlist = nld_inputlists[i]
+            curr_nld = self.run_NLD_sim(nld_inputlist)
+            for Gg in Ggs:
+                curr_gsfs.append(self.run_GSF_sim(Gg, curr_nld))
+            return output_pair(curr_nld, curr_gsfs)
+        return MC_func
+    
+    def prompt_grid_search(self, variable, lowlim, highlim, num, N_cores):
         '''
         runs the small grid search at the beginning
         '''
+        
         nld_inputlist = self.initialize_nld_inputlist()
+        
+        nld_inputlists = []
+        
         for s in np.linspace(lowlim, highlim, num = num):
+            new_inputlist = nld_inputlist.copy()
+            new_inputlist[NLD_keys.index(variable)] = s
+            nld_inputlists.append(new_inputlist)
+        
+        MC_sim = self.make_MC_func(nld_inputlists, [self.Gg])
+        
+        p = Pool(N_cores)
+        result = list(tqdm.tqdm(p.imap(MC_sim, range(num)), total=num, desc = 'Quick grid search'))
+        res_matr = np.array(result)
+        
+        self.nlds += [el.nld for el in res_matr]
+        self.gsfs += [el.gsf[0] for el in res_matr]
+        
+        
+        '''
+        for s in tqdm.tqdm(np.linspace(lowlim, highlim, num = num), desc = 'Quick grid search'):
+        #for s in np.linspace(lowlim, highlim, num = num):
             nld_inputlist[NLD_keys.index(variable)] = s
+            
             curr_nld = self.run_NLD_sim(nld_inputlist)
             curr_gsf = self.run_GSF_sim(self.Gg, curr_nld)
             self.nlds.append(curr_nld)
             self.gsfs.append(curr_gsf)
+        '''
     
-    def MC_normalization(self, opt_range = [0.9,1.1], MC_range = 1000, load_lists = False, num = 20, delete_points_nld = None, delete_points_gsf = None):
+    def MC_normalization(self, N_cores = 4, opt_range = [0.9,1.1], MC_range = 1000, load_lists = False, num = 20, delete_points_nld = None, delete_points_gsf = None):
         
         '''
         Runs the MC simulations, by picking random values for the input variables,
@@ -579,7 +1164,6 @@ class normalization:
             #initialize lists, start calculating NLDs and GSFs
             self.nlds = []
             self.gsfs = []
-            os.chdir(self.rsc_folderpath)
             
             #first: a small grid search by varying only one of the rho variables at a time.
             self.grid_searches = 0
@@ -591,18 +1175,16 @@ class normalization:
                 if vardouble and varflat:
                     lowlim = getattr(self, variable + 'min')*opt_range[0]
                     highlim = getattr(self, variable + 'max')*opt_range[1]
-                    self.prompt_grid_search(variable, lowlim, highlim, num)
+                    self.prompt_grid_search(variable, lowlim, highlim, num, N_cores)
                     self.grid_searches += 1
             
-            #then, pick random nlds and gsfs
-            for i in tqdm.tqdm(range(MC_range), desc = 'Normalizing NLDs and GSFs'):
-                
+            nld_inputlists = []
+            Ggs = []
+            for i in range(MC_range):
                 #initialize input list for NLD with default values
                 nld_inputlist = self.initialize_nld_inputlist()
                 current_Gg = self.Gg
                 
-                #find out if you need to vary the parameters. If so, change the default values from the list above.
-                #start with L1, L2... These are ints, and L1 must be lower than L2.
                 for couple in couples:
                     if (couple[0] in self.free_parameters) and (couple[1] in self.free_parameters) and (getattr(self, couple[0] + '_range') == getattr(self, couple[1] + '_range')):
                         par_range = getattr(self, couple[0] + '_range')
@@ -620,23 +1202,26 @@ class normalization:
                     if float_par in self.free_parameters:
                         par_range = getattr(self, float_par + '_range')
                         nld_inputlist[NLD_keys.index(float_par)] = rng.uniform(low = par_range[0], high = par_range[1])
-                        
-                #run the NLD simulation
-                curr_nld = self.run_NLD_sim(nld_inputlist)
-                self.nlds.append(curr_nld)
-
+                
+                nld_inputlists.append(nld_inputlist)
+                
                 if 'Gg' in self.free_parameters:
                     par_range = getattr(self, 'Gg_range')
                     #for each NLD simulation, run 10 GSF simulations (it seems like I need it to get enough simulations, and the most effective way instead of incresing MC_range)
                     for j in range(10):
                         current_Gg = rng.uniform(low = par_range[0], high = par_range[1])
-                        curr_gsf = self.run_GSF_sim(current_Gg, curr_nld)
-                        self.gsfs.append(curr_gsf)
+                        Ggs.append(current_Gg)
                 else:
-                    curr_gsf = self.run_GSF_sim(self.Gg, curr_nld)
-                    self.gsfs.append(curr_gsf)
-                
-            os.chdir(root_folder)
+                    Ggs.append(self.Gg)
+            
+            MC_sim = self.make_MC_func(nld_inputlists, Ggs)
+            p = Pool(N_cores)
+            result = list(tqdm.tqdm(p.imap(MC_sim, range(MC_range)), total=MC_range, desc = 'Normalizing NLDs and GSFs'))
+            res_matr = np.array(result)
+            
+            self.nlds += [el.nld for el in res_matr]
+            self.gsfs += [el.gsf[i] for i in range(10) for el in res_matr]
+            
             if isinstance(delete_points_nld, list):
                 for i, el in enumerate(self.nlds):
                     el.delete_point(delete_points_nld)
@@ -646,6 +1231,8 @@ class normalization:
             
             np.save('nlds.npy', self.nlds)
             np.save('gsfs.npy', self.gsfs)
+    
+    
     
     def calc_TALYS_models(self, load_lists = False, N_cores = 4, number_of_strength_models = 9):
         '''
@@ -718,6 +1305,10 @@ class normalization:
         ax0.axvspan(self.ExL1, self.ExL2, alpha=0.2, color='red',label='Fitting intv.')
         ax0.errorbar(self.NLD_table[:-1,0], self.NLD_table[:-1,1],yerr=self.NLD_table[:-1,-1], fmt = '.', color = 'b', ecolor='b', label='This work')
         ax0.plot(self.best_fitting_nld.extr_mat[(self.H1-5):,0], self.best_fitting_nld.extr_mat[(self.H1-5):,1], color = 'k', linestyle = '--', alpha = 1, label = 'extrap.')
+        
+        #Debug
+        #extr2 = [self.rhofg(ex, self.best_fitting_nld.a, self.best_fitting_nld.T, self.best_fitting_nld.E1, self.best_fitting_nld.E0, self.best_fitting_nld.extr_model, self.best_fitting_nld.b1, self.best_fitting_nld.b2) for ex in self.best_fitting_nld.extr_mat[:,0]]
+        #ax0.plot(self.best_fitting_nld.extr_mat[(self.H1-5):,0], extr2[(self.H1-5):], color = 'b', linestyle = '--', alpha = 1, label = 'extrap.2')
         
         ax1.fill_between(self.GSF_table[:,0], self.GSF_table[:,3], self.GSF_table[:,-3], color = 'b', alpha = 0.2, label=r'1$\sigma$ conf.')
         if self.TALYS_models:
@@ -914,9 +1505,9 @@ class normalization:
 #Useful classes and functions preparing for the parallel calculations
 
 class output_pair:
-    def __init__(self, nld, gsf):
-        self.nld = nld
-        self.gsf = gsf
+    def __init__(self, ld, sf):
+        self.nld = ld
+        self.gsf = sf
 
 def make_talys_sim(pars, talys_root_path, talys_executable_path, TALYS_ver):
     filtered_gsfs = pars['filtered_gsfs']
