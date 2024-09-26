@@ -23,8 +23,7 @@ A = 167 #mass number
 Z = 67
 Sn = 7.280 #MeV
 rhosigchi_folder = 'rhosigchi_167Ho'
-oslo_method_software_path = '/home/francesco/oslo-method-software-auto'
-Ho167norm = normalization(rhosigchi_folder, oslo_method_software_path, A, Z, Sn)
+Ho167norm = normalization(rhosigchi_folder, A, Z, Sn)
 
 '''
 2) one provides the class with the information for the normalization with "set_attributes".
@@ -88,7 +87,7 @@ Ho167norm.import_low_Ex_nld()
     load_lists = True, if you already have run the program once, and you want to load the data from the saved files instead of calculating it once more
 '''
 opt_range = [0.9,1.1] # before running the MC simulation, the algorithm does a quick, mini-gridsearch with the most probable values. opt_range tells how far away from the suggested values one should stride.
-MC_range = 1000       # the number of MC simulations
+MC_range = 1000      # the number of MC simulations
 Ho167norm.MC_normalization(opt_range = opt_range, MC_range = MC_range, load_lists = False, delete_points_gsf=[-5,-4,-3,-2,-1])
 
 '''

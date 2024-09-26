@@ -40,49 +40,6 @@ def import_ocl(path,a0,a1, no_errcol=False):
             else:
                 polished_matrix[i-channels,2] = el
     return polished_matrix
-
-class gsf:
-    '''
-    Class for reading strength functions
-    '''
-    
-    def __init__(self, path, a0, a1):
-        self.path = path
-        self.rawmat = import_ocl(path, a0, a1)
-        self.x = self.rawmat[:,0]
-        self.y = self.rawmat[:,1]
-        self.yerr = self.rawmat[:,2]
-            
-    def clean_nans(self):
-        clean_E = []
-        clean_y = []
-        clean_yerr = []
-        for E, y, yerr in zip(self.x, self.y, self.yerr):
-            if not math.isnan(y):
-                clean_E.append(E)
-                clean_y.append(y)
-                clean_yerr.append(yerr)
-        self.x = np.array(clean_E)
-        self.y = np.array(clean_y)
-        self.yerr = np.array(clean_yerr)
-    
-    def delete_point(self, position):
-        self.clean_nans()
-        self.y = np.delete(self.y, position)
-        self.x = np.delete(self.x, position)
-        self.yerr = np.delete(self.yerr, position)
-
-class nld(gsf):
-    '''
-    Class for reading level densities
-    '''
-    def __init__(self, path, a0, a1):
-        super().__init__(path, a0, a1)
-        
-    def add_rhoSn(self, Sn, rhoSn, drhoSn):
-        self.x = np.append(self.x, Sn)
-        self.y = np.append(self.y, rhoSn)
-        self.yerr = np.append(self.yerr, drhoSn)
         
 class ncrate():
     '''
@@ -103,7 +60,7 @@ class MACS():
         self.y = self.rawmat[:,2]
         
         
-class gsf_p:
+class gsf:
     '''
     Class for reading strength functions
     '''
@@ -133,7 +90,7 @@ class gsf_p:
         self.x = np.delete(self.x, position)
         self.yerr = np.delete(self.yerr, position)
 
-class nld_p(gsf_p):
+class nld(gsf):
     '''
     Class for reading level densities
     '''

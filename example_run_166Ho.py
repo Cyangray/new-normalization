@@ -23,8 +23,7 @@ A = 166 #mass number
 Z = 67
 Sn = 6.243640 #MeV
 rhosigchi_folder = 'rhosigchi'
-oslo_method_software_path = '/home/francesco/oslo-method-software-auto'
-Ho166norm = normalization(rhosigchi_folder, oslo_method_software_path, A, Z, Sn)
+Ho166norm = normalization(rhosigchi_folder, A, Z, Sn)
 
 '''
 2) one provides the class with the information for the normalization with "set_attributes".
@@ -109,7 +108,7 @@ Ho166norm.set_TALYS_version(talys_root_path, talys_executable_path, talys_versio
 8) plot graphs.
 '''
 Ho166norm.plot_graphs()
-"""
+
 '''
 9) Run TALYS many times to calculate the ncrates and MACSs.
 9a) First, you have to define "high_energy_extrap": a (2,n) array with energies and gsf for higher energies. For example, this could be the experimental GDR data for a nearby nucleus, or an exponential extrapolation
@@ -148,4 +147,3 @@ print(f'Whole parallel TALYS simulation ended in {finish_whole - start_whole} se
 10) write results into human readable tables
 '''
 Ho166norm.write_ncrate_MACS_tables(load_lists = False, label = '')
-"""
