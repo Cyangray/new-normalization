@@ -11,7 +11,7 @@ Dictionaries for most of the other libraries
 #constants
 from numpy import sqrt, pi
 import numpy as np
-k_B = 8.617333262145e1 #Boltzmann konstant, keV*GK^-1
+k_B = 8.617333262145e1 #Boltzmann constant, keV*GK^-1
 c_vacuum = 299792458 #speed of light in vacuum, m/s
 N_A = 6.02214076e23 #Avogadro's number
 k_C = 1.439996 #e^2*fm*MeV

@@ -458,7 +458,7 @@ def _nld_talys(a0, a1, FGmax, rhotmopaw, sigma2, start_spin):
 def _counting(a0, a1, FGmax, dim, current_rho, current_drho, D0, L1, L2, H1, H2, TL1, TL2, TH1, TH2, extr_model, Ex_low, s_low, sigma, FWHM, a, E1, T, E0, Sn, rhopaw, sigpaw, nld_lvl):
     
     b2 = (sigma**2 - s_low**2)/(Sn - Ex_low)
-    b1 = s_low**2 - b2*Ex_low;
+    b1 = s_low**2 - b2*Ex_low
     
     _, rhoSn_extrap = rhofg(Sn, a, T, E1, E0, extr_model, b1, b2)
     eta = current_rho/rhoSn_extrap

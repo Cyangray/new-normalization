@@ -79,10 +79,9 @@ def find_chis_interp(vals, chis, iterations = 2):
             vertices_more = np.vstack((vertices_more, point))
 
     def delete_points(vertices_input, invert):
+        vertices = vertices_input
         if invert:
             vertices = np.c_[vertices_input[:,0]*-1, vertices_input[:,1]]
-        else:
-            vertices = vertices_input
         delete_indexes = []
         x0 = vertices[0,0]
         y0 = vertices[0,1]

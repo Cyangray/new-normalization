@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-'''
+"""
 Guide:
 This is an example of usage of the normalization code, which takes as input the
 output of rhosigchi (in the form of the path to the folder where rhosigchi took
 place) and returns (among other things) two tables, one for NLD and one for GSF
-including the reccomended values, together with the lower and upper systematic
+including the recommended values, together with the lower and upper systematic
 error, and the statistical error.
-'''
+"""
 
 from normalization_class import normalization
 import numpy as np
@@ -35,9 +35,9 @@ dsigma2FG = sigma2FG*0.01
 dsigma2RMI = sigma2RMI*0.01
 dsigma = [dsigma2FG, dsigma2RMI]
 
-Ho166norm.set_attributes(sigma = sigma,     # spin-cutoff parameter. float or list/touple
+Ho166norm.set_attributes(sigma = sigma,     # spin-cutoff parameter. float or list/tuple
                          dsigma = dsigma,   # error in sigma. Same type as sigma
-                         D0 = 4.35,         # neutron average resonance spacing (in eV). float or list/touple
+                         D0 = 4.35,         # neutron average resonance spacing (in eV). float or list/tuple
                          dD0 = 0.15,        # error in D0. Same type as D0.
                          target_spin = 7/2, # spin of the target nucleus (Z, N-1)
                          L1 = 9,            # lower limit of where to fit the nld to the known levels at low Ex. Can be given as a bin
@@ -55,8 +55,8 @@ Ho166norm.set_attributes(sigma = sigma,     # spin-cutoff parameter. float or li
                          dGg = 5.0,         # error in Gg
                          extr_model = 2,    # model used to extrapolate the nld to rho(Sn). 1 for constant temperature, 2 for Fermi gas. 
                          FWHM = 150.0,      # Full-width half-maximum
-                         a = 18.280001,     # a parameter for the Fermi gas etrapolation
-                         #da = 18.280001*0.01, # do you want to add an uncertainty to the rho extrapolation parameter? You can do it. just add "d" in front of the name of the parameter, and put the value of the error. If you want to propagate this unertainty, remember to add, in this case, "a = ['err', 'err']" in set_variation_intervals below
+                         a = 18.280001,     # a parameter for the Fermi gas extrapolation
+                         #da = 18.280001*0.01, # do you want to add an uncertainty to the rho extrapolation parameter? You can do it. just add "d" in front of the name of the parameter, and put the value of the error. If you want to propagate this uncertainty, remember to add, in this case, "a = ['err', 'err']" in set_variation_intervals below
                          E1 = -0.949000    # E1 parameter
                          )
 
@@ -67,7 +67,7 @@ std_devs = 2.0
 Ho166norm.set_variation_intervals(std_devs,     # std_devs: how many standard deviations the parameter will be varied in the MC simulation.
                        D0 = ['err', 'err'],     # if you put ['err', 'err'], then the dD0 value will be used up and down from the given value(s) in "set_attributes". The same is true for all other variables (like e.g. sigma or Gg)
                        L1 = [8,14],             # while the interval in "set_attributes" indicates where the chi2 test will be run, this interval gives the range where the MC algorithm will pick the L1 and L2 values. L2 is always bigger than L1. See ***my Sb and Ho articles*** for more explanations on what's going on here (even though back then I used a grid search and not a MC simulation)
-                       L2 = [8,14],             # this can be the same as for L1. L2 will be always randomly picked to be bigger than L1. If L2 is not provided here, the value given (or guessed) in "set_attributes" will be always used. In this case, make sure that L2 is bigger than the L1 range given here.
+                       L2 = [8,14],             # this can be the same as for L1. L2 will be always randomly picked to be bigger than L1. If L2 is not provided here, the value given (or guessed) in "set_attributes" will always be used. In this case, make sure that L2 is bigger than the L1 range given here.
                        #TL1 = [16,22],           # vary TL1 and TL2 in the same ways as L1 and L2. The same can be done with all bin intervals.
                        #TL2 = [16,22],
                        sigma = ['err', 'err'],
